@@ -1,0 +1,19 @@
+# Virtual environment
+.venv/
+venv/
+
+# ChromaDB data
+chroma_data/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Data files
+facebook_messages.json
+facebook_clean.json
+
+# IDE
+.vscode/
+.idea/
