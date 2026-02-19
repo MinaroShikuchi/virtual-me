@@ -8,15 +8,21 @@ Includes Smart Filtering:
 import chromadb
 from chromadb.utils import embedding_functions
 import ollama
+from neo4j import GraphDatabase
 import json
 import re
+import os
 from pathlib import Path
 
 # --- CONFIGURATION ---
-CHROMA_PATH = "./chroma_data"
+CHROMA_PATH = "~/.chroma_data"
 COLLECTION_NAME = "romain_brain"
+EPISODIC_COLLECTION_NAME = "episodic_memory"
+OLLAMA_HOST = "http://192.168.32.1:11434"
 OLLAMA_MODEL = "deepseek-r1:14b"
 NAME_MAPPING_FILE = "./conversation_names.json"
+NEO4J_URI = "bolt://localhost:7687"
+NEO4J_AUTH = ("neo4j", "nostalgia")
 
 # --- SETUP ---
 
@@ -45,18 +51,84 @@ embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
     model_name="paraphrase-multilingual-MiniLM-L12-v2"
 )
 
+# Connect to collections
 try:
-    client = chromadb.PersistentClient(path=CHROMA_PATH)
+    chroma_path_expanded = os.path.expanduser(CHROMA_PATH)
+    client = chromadb.PersistentClient(path=chroma_path_expanded)
+    
     collection = client.get_collection(
         name=COLLECTION_NAME,
         embedding_function=embedding_func
     )
-    print(f"✅ Connected to ChromaDB: {collection.count()} messages loaded\n")
+    
+    # Try to get episodic memory, but don't fail if it doesn't exist yet
+    try:
+        episodic_collection = client.get_collection(
+            name=EPISODIC_COLLECTION_NAME,
+            embedding_function=embedding_func
+        )
+        print(f"✅ Connected to ChromaDB:")
+        print(f"   - Main Memory: {collection.count()} messages")
+        print(f"   - Episodic Memory: {episodic_collection.count()} episodes")
+    except Exception:
+        episodic_collection = None
+        print(f"✅ Connected to ChromaDB: {collection.count()} messages loaded")
+        print(f"⚠️  Episodic memory not found. Run 'episodic_memory.py' to generate.")
+
 except Exception as e:
     print(f"❌ Error connecting to ChromaDB: {e}")
     exit(1)
 
+# Connect to Neo4j
+neo4j_driver = None
+try:
+    neo4j_driver = GraphDatabase.driver(NEO4J_URI, auth=NEO4J_AUTH)
+    # Verify connection
+    with neo4j_driver.session() as session:
+        count = session.run("MATCH (n) RETURN count(n) AS count").single()["count"]
+        print(f"✅ Connected to Neo4j: {count} nodes in Knowledge Graph\n")
+except Exception as e:
+    print(f"⚠️  Could not connect to Neo4j: {e}")
+    print(f"    Graph context will be unavailable.\n")
+
+
+
 # --- CORE LOGIC ---
+
+def query_graph_context(person_name):
+    """Query Neo4j for social scale context about a person."""
+    if not neo4j_driver or not person_name:
+        return ""
+    
+    try:
+        with neo4j_driver.session() as session:
+            # Stats: Message count and avg sentiment
+            query = """
+                MATCH (p:Person)
+                WHERE p.normalized_name CONTAINS toLower($name)
+                OPTIONAL MATCH (p)-[:SENT]->(m:Message)
+                RETURN p.name as name, count(m) as msg_count, avg(m.polarity) as sentiment
+                LIMIT 1
+            """
+            result = session.run(query, name=person_name).single()
+            
+            if result and result["name"]:
+                name = result["name"]
+                count = result["msg_count"]
+                sentiment = result["sentiment"]
+                
+                # Interpret sentiment
+                mood = "Neutral"
+                if sentiment > 0.1: mood = "Positive"
+                if sentiment > 0.3: mood = "Very Positive"
+                if sentiment < -0.1: mood = "Negative"
+                if sentiment < -0.3: mood = "Very Negative"
+                
+                return f"[Graph Info] {name}: {count} messages sent. Overall Vibe: {mood} ({sentiment:.2f})"
+    except Exception as e:
+        print(f"⚠️  Graph Query Error: {e}")
+    
+    return ""
 
 def detect_smart_filter(question):
     """
@@ -105,19 +177,14 @@ def detect_smart_filter(question):
                 break
     
     if matched_name and matched_id:
-        # Check for "with/to/from [name]" pattern using Regex
-        # Try both full name and partial matches
-        patterns = [
-            fr"\b(with|to|from|chat)\s+{re.escape(matched_name)}\b",
-            fr"\b(with|to|from|chat)\s+\w*{re.escape(matched_name.split()[0][:4])}\w*\b"  # Partial match
-        ]
-        
-        for pattern in patterns:
-            if re.search(pattern, question_lower):
-                return {"conversation": matched_id}, matched_name, "Strict (Conversation)"
-        
-        # If name is present but no preposition, allow global search
-        return None, matched_name, "Global (Mention)"
+        # Check for explicitly "about [name]" -> Global Search
+        # This allows searching across ALL conversations for mentions of this person
+        if re.search(fr"\b(about|mentioning)\s+{re.escape(matched_name)}\b", question_lower):
+            return None, matched_name, "Global (Mention)"
+            
+        # Default behavior: If a name is mentioned, assume we want to query that conversation
+        # This matches the user request: "retrieve the associated conversation"
+        return {"conversation": matched_id}, matched_name, "Strict (Conversation)"
     
     return None, None, "None"
 
@@ -133,7 +200,39 @@ def ask_facebook_history(question: str, show_sources: bool = True):
         print(f"   ↳ 🌎 Context: Global search about '{friend_name}'")
     
     # 2. RETRIEVE
+    context_messages = []
+    context_episodes = []
+    context_graph = ""
+    
+    # C. Retrieve Graph Context (Social Stats)
+    if friend_name:
+        context_graph = query_graph_context(friend_name)
+        if context_graph:
+            print(f"   ↳ 🕸️  Graph: Found social context for '{friend_name}'")
+
     try:
+        # A. Retrieve Episodes (High-level memory)
+        # We always query episodic memory for global context, unless strict conversation filter is active
+        # (Though even then, maybe relevant?)
+        if episodic_collection:
+            # For now, simplistic query - just use the question
+            ep_results = episodic_collection.query(
+                query_texts=[question],
+                n_results=5
+            )
+            
+            if ep_results['documents'] and len(ep_results['documents']) > 0:
+                ep_docs = ep_results['documents'][0]
+                ep_metas = ep_results['metadatas'][0]
+                
+                for doc, meta in zip(ep_docs, ep_metas):
+                    date = meta.get('date', 'Unknown')
+                    emotion = meta.get('emotion', '')
+                    if emotion and emotion != 'neutral':
+                        doc += f" (Emotion: {emotion})"
+                    context_episodes.append(f"[{date}] {doc}")
+                    
+        # B. Retrieve Messages (Granular memory)
         if strategy == "Strict (Conversation)" and where_filter:
             # Load the ENTIRE conversation with this person (no semantic search)
             # Get all messages from this conversation, sorted by date
@@ -179,12 +278,11 @@ def ask_facebook_history(question: str, show_sources: bool = True):
         print(f"❌ Search Error: {e}")
         return
 
-    if not results['documents']:
+    if not results['documents'] and not context_episodes:
         print("\n❌ No relevant messages found.")
         return
 
     # 3. AUGMENT
-    context_messages = []
     documents = results['documents']
     metadatas = results['metadatas']
 
@@ -198,27 +296,50 @@ def ask_facebook_history(question: str, show_sources: bool = True):
         
         context_messages.append(f"[{date}] [Chat: {chat_partner}] {sender}: {doc}")
     
-    context_data = "\n".join(context_messages)
+    # Combine episodes, graph, and messages
+    context_data = ""
+    
+    if context_graph:
+        context_data += f"{context_graph}\n\n"
+    
+    if context_episodes:
+        context_data += "=== SIGNIFICANT LIFE EVENTS (EPISODIC MEMORY) ===\n"
+        context_data += "\n".join(context_episodes)
+        context_data += "\n\n"
+        
+    context_data += "=== CHAT LOGS (DETAILED MEMORY) ===\n"
+    context_data += "\n".join(context_messages)
     
     if show_sources:
-        print(f"\n📚 Retrieved messages:")
+        if context_episodes:
+            print(f"\n🧠 Retrieved Episodes:")
+            print("-" * 60)
+            for i, ep in enumerate(context_episodes, 1):
+                print(f"{i}. {ep}")
+            print("-" * 60)
+            
+        print(f"\n📚 Retrieved Chat Messages:")
         print("-" * 60)
-        for i, msg in enumerate(context_messages, 1):
+        for i, msg in enumerate(context_messages[:10], 1): # Show first 10
             print(f"{i}. {msg[:120]}..." if len(msg) > 120 else f"{i}. {msg}")
+        if len(context_messages) > 10:
+            print(f"... and {len(context_messages) - 10} more.")
         print("-" * 60 + "\n")
     
     # 4. GENERATE
     system_prompt = (
         "You are an AI assistant analyzing personal Facebook history. "
+        "You recall both significant life events (Episodic Memory) and detailed chat logs. "
         "Use the provided messages to answer the user's question. "
-        "Pay attention to who the chat is with (indicated in [Chat: ...]). "
+        "Pay attention to dates and who the chat is with. "
         f"CONTEXT:\n{context_data}"
     )
 
     print("🤖 Answer:\n")
     try:
-        # Use streaming to get response and track tokens
-        response = ollama.chat(
+        # ... (rest of generation logic)
+        client = ollama.Client(host=OLLAMA_HOST)
+        response = client.chat(
             model=OLLAMA_MODEL,
             messages=[
                 {'role': 'system', 'content': system_prompt},
@@ -229,6 +350,7 @@ def ask_facebook_history(question: str, show_sources: bool = True):
                 'num_ctx': 32768  # 32k context window
             }
         )
+        # ... (rest of print logic)
         
         # Display thinking process if available (DeepSeek-R1 feature)
         message_content = response['message']['content']

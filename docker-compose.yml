@@ -12,3 +12,15 @@ services:
       - IS_PERSISTENT=TRUE
       - ANONYMIZED_TELEMETRY=FALSE
     restart: unless-stopped
+
+  neo4j:
+    image: neo4j:5.15
+    container_name: virtual-me-neo4j
+    ports:
+      - "7474:7474" # HTTP
+      - "7687:7687" # Bolt
+    volumes:
+      - ./neo4j_data:/data
+    environment:
+      - NEO4J_AUTH=neo4j/password
+    restart: unless-stopped
