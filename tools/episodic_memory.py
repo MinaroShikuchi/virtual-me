@@ -5,6 +5,10 @@ from chromadb.utils import embedding_functions
 from textblob import TextBlob
 from typing import Dict, Any, List
 
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import EMBEDDING_MODEL
+
 # --- CONFIGURATION ---
 CHROMA_PATH = "~/.chroma_data"
 INPUT_FILE = "facebook_messages.json"
@@ -97,7 +101,7 @@ def main():
 
     # Embedding function
     embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name="paraphrase-multilingual-MiniLM-L12-v2"
+        model_name=EMBEDDING_MODEL
     )
 
     # Database

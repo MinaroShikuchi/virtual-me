@@ -3,14 +3,21 @@
 venv/
 
 # ChromaDB data
+.chroma_data/
 chroma_data/
+
+# Neo4j data
+neo4j_data/
 
 # Python cache
 __pycache__/
 *.pyc
 *.pyo
 
-# Data files
+# Data files (large exports — keep folder structure, ignore payloads)
+data/*
+
+# Legacy root-level data files
 facebook_messages.json
 facebook_clean.json
 

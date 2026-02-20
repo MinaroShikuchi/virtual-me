@@ -12,10 +12,13 @@ from neo4j import GraphDatabase
 import json
 import re
 import os
+import sys
 from pathlib import Path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from config import EMBEDDING_MODEL
 
 # --- CONFIGURATION ---
-CHROMA_PATH = "~/.chroma_data"
+CHROMA_PATH = "./.chroma_data"
 COLLECTION_NAME = "romain_brain"
 EPISODIC_COLLECTION_NAME = "episodic_memory"
 OLLAMA_HOST = "http://192.168.32.1:11434"
@@ -46,9 +49,9 @@ def load_mappings():
 
 NAME_MAPPING, REVERSE_NAME_MAPPING = load_mappings()
 
-# Embedding function (Must match ingestion - multilingual for French)
+# Embedding function (must match ingestion model)
 embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="paraphrase-multilingual-MiniLM-L12-v2"
+    model_name=EMBEDDING_MODEL
 )
 
 # Connect to collections
