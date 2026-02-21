@@ -16,10 +16,19 @@ from rank_bm25 import BM25Okapi
 from config import CHROMA_PATH, COLLECTION_NAME, EPISODIC_NAME, NAME_MAPPING_FILE, EMBEDDING_MODEL
 
 
+def _get_embedding_model() -> str:
+    """Return the active embedding model name (session_state > config default)."""
+    try:
+        return st.session_state.get("embedding_model", EMBEDDING_MODEL)
+    except Exception:
+        return EMBEDDING_MODEL
+
+
 @st.cache_resource(show_spinner="Loading embeddings…")
-def load_embedding_func():
+def load_embedding_func(_model_name: str | None = None):
+    model = _model_name or _get_embedding_model()
     return embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL
+        model_name=model
     )
 
 
@@ -30,12 +39,12 @@ def load_reranker():
 
 
 @st.cache_resource(show_spinner="Connecting to ChromaDB…")
-def load_chroma():
-    ef = load_embedding_func()
+def load_chroma(_embedding_model: str | None = None):
+    ef = load_embedding_func(_embedding_model or _get_embedding_model())
     client = chromadb.PersistentClient(path=os.path.expanduser(CHROMA_PATH))
-    collection = client.get_collection(COLLECTION_NAME, embedding_function=ef)
+    collection = client.get_or_create_collection(COLLECTION_NAME, embedding_function=ef)
     try:
-        episodic = client.get_collection(EPISODIC_NAME, embedding_function=ef)
+        episodic = client.get_or_create_collection(EPISODIC_NAME, embedding_function=ef)
     except Exception:
         episodic = None
     return collection, episodic

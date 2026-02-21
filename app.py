@@ -8,24 +8,33 @@ Module layout:
     retrieval.py         — hybrid search pipeline (semantic + BM25 + RRF + rerank)
     llm.py               — Ollama LLM call with thinking-token support
   ui/
-    sidebar.py           — sidebar: connections, LLM settings, RAG settings
-    dashboard.py         — 📊 Dashboard tab
-    chat.py              — 💬 Chat tab
-    rag_explorer.py      — 🔍 RAG Explorer tab
-    ingest.py            — ⚙️ Ingest tab
+    sidebar.py           — sidebar: connection status
+    settings.py          — settings modal (LLM, RAG, Neo4j)
+    dashboard.py         — Dashboard page
+    chat.py              — Chat page
+    rag_explorer.py      — RAG Explorer page
+    ingest.py            — Vector Store page (semantic memory)
+    graph.py             — Graph page
+  pages/
+    dashboard.py         — page wrapper for Dashboard
+    chat.py              — page wrapper for Chat
+    rag_explorer.py      — page wrapper for RAG Explorer
+    ingest.py            — page wrapper for Vector Store
+    graph.py             — page wrapper for Graph
 """
 import streamlit as st
 
 # ── Page config (must be first Streamlit call) ────────────────────────────────
 st.set_page_config(
     page_title="Virtual Me",
-    page_icon="🧠",
+    page_icon=":material/psychology:",
     layout="wide",
     initial_sidebar_state="expanded",
 )
 
 # ── Custom CSS ────────────────────────────────────────────────────────────────
 st.markdown("""
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined" rel="stylesheet" />
 <style>
     /* Base */
     html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
@@ -84,47 +93,35 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ── Imports (after page config) ───────────────────────────────────────────────
-from rag.resources   import load_chroma, load_mappings
-from ui.sidebar      import render_sidebar
-from ui.dashboard    import render_dashboard_tab
-from ui.chat         import render_chat_tab
-from ui.rag_explorer import render_rag_tab
-from ui.ingest       import render_ingest_tab
-from ui.graph        import render_graph_tab
+from rag.resources import load_chroma
+from ui.sidebar    import render_sidebar
+
+from pages.dashboard    import page as dashboard_page
+from pages.chat         import page as chat_page
+from pages.rag_explorer import page as rag_explorer_page
+from pages.ingest       import page as ingest_page
+from pages.graph        import page as graph_page
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
-    collection, episodic   = load_chroma()
-    id_to_name, name_to_id = load_mappings()
+    # Sidebar: connection status
+    collection, episodic = load_chroma()
+    render_sidebar(collection, episodic)
 
-    model, ollama_host, num_ctx, n_results, top_k, do_rerank, hybrid, \
-    neo4j_uri, neo4j_user, neo4j_password = render_sidebar(collection, episodic)
+    # Navigation (renders in sidebar automatically)
+    pg = st.navigation(
+        [
+            st.Page(dashboard_page,    title="Dashboard",    url_path="dashboard",    default=True, icon=":material/dashboard:"),
+            st.Page(chat_page,         title="Chat",         url_path="chat",         icon=":material/chat:"),
+            st.Page(rag_explorer_page, title="RAG Explorer", url_path="rag",          icon=":material/search:"),
+            st.Page(ingest_page,       title="Vector",       url_path="vector",       icon=":material/database:"),
+            st.Page(graph_page,        title="Graph",        url_path="graph",         icon=":material/hub:"),
+        ]
+    )
 
-    tab_dash, tab_chat, tab_rag, tab_ingest, tab_graph = st.tabs([
-        "📊 Dashboard", "💬 Chat", "🔍 RAG Explorer", "⚙️ Ingest", "🕸️ Graph"
-    ])
-
-    with tab_dash:
-        render_dashboard_tab(collection)
-
-    with tab_chat:
-        render_chat_tab(
-            collection, episodic, id_to_name, name_to_id,
-            model, ollama_host, num_ctx, n_results, top_k, do_rerank, hybrid,
-        )
-
-    with tab_rag:
-        render_rag_tab(
-            collection, episodic, id_to_name, name_to_id,
-            n_results, top_k, do_rerank, hybrid,
-        )
-
-    with tab_ingest:
-        render_ingest_tab(collection)
-
-    with tab_graph:
-        render_graph_tab(neo4j_uri, neo4j_user, neo4j_password)
+    # Run the selected page
+    pg.run()
 
 
 if __name__ == "__main__":

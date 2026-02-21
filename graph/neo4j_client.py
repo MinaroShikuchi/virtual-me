@@ -9,18 +9,7 @@ from contextlib import contextmanager
 
 from neo4j import GraphDatabase, exceptions as neo4j_exc
 
-# ── Entity labels recognised by the schema ────────────────────────────────────
-ENTITY_LABELS = [
-    "Person", "Place", "Song", "Artist", "Company",
-    "Game", "Activity", "Interest",
-]
-
-# ── Relationship types ────────────────────────────────────────────────────────
-REL_TYPES = [
-    "PARTNER_OF", "FRIEND_OF", "FAMILY_OF", "COLLEAGUE_OF", "MET",
-    "LIVES_IN", "VISITED", "TRAVELLED_TO",
-    "WORKS_AT", "LISTENED_TO", "INTERESTED_IN",
-]
+from graph.constants import ENTITY_LABELS, REL_TYPES  # noqa: F401 — re-exported
 
 
 class Neo4jClient:
@@ -163,10 +152,43 @@ class Neo4jClient:
             except:
                 existing_rels = set()
 
+            # Labels whose stat card should show the sum of a relationship
+            # property instead of the raw node count.
+            # Artist/Song cards show unique node count; only Activity uses
+            # the aggregated activity_count.
+            _AGG_LABELS = {
+                "Activity": ("INTERESTED_IN", "activity_count"),
+            }
+
+            # Interest card: count unique target nodes of INTERESTED_IN
+            # relationships (they may be labeled Interest or Activity).
+            _REL_COUNT_LABELS = {
+                "Interest": "INTERESTED_IN",
+            }
+
             for label in ENTITY_LABELS:
-                if label in existing_labels:
+                rel_count_rel = _REL_COUNT_LABELS.get(label)
+                if rel_count_rel and rel_count_rel in existing_rels:
+                    # Count distinct target nodes of the relationship
                     try:
-                        result = s.run(f"MATCH (n:{label}) RETURN count(n) AS c")
+                        result = s.run(
+                            f"MATCH ()-[:{rel_count_rel}]->(n) "
+                            f"RETURN count(DISTINCT n) AS c"
+                        )
+                        stats[label] = result.single()["c"]
+                    except:
+                        stats[label] = 0
+                elif label in existing_labels:
+                    try:
+                        agg = _AGG_LABELS.get(label)
+                        if agg and agg[0] in existing_rels:
+                            rel_type, prop = agg
+                            result = s.run(
+                                f"MATCH ()-[r:{rel_type}]->(n:{label}) "
+                                f"RETURN coalesce(sum(r.{prop}), count(n)) AS c"
+                            )
+                        else:
+                            result = s.run(f"MATCH (n:{label}) RETURN count(n) AS c")
                         stats[label] = result.single()["c"]
                     except:
                         stats[label] = 0
@@ -208,20 +230,72 @@ class Neo4jClient:
             )
             return [r["name"] for r in result]
 
-    def top_nodes_by_degree(self, label: str, limit: int = 10) -> list[dict]:
+    def top_nodes_by_degree(self, label: str, limit: int = 10,
+                            exclude_names: list[str] | None = None) -> list[dict]:
         """
         Returns the top `limit` nodes of `label` sorted by total relationship count.
         Each result: {name, degree}
+
+        For Activity nodes, ``degree`` is the sum of ``activity_count`` stored on
+        incoming INTERESTED_IN relationships (i.e. total activities, not just 1
+        per type).  For all other labels the plain relationship count is used.
+
+        Args:
+            exclude_names: node names to filter out (e.g. the self-identity node).
+        """
+        excluded = [n.upper() for n in (exclude_names or [])]
+        # Labels where "degree" should be a relationship property sum
+        _AGG_DEGREE = {
+            "Activity": ("INTERESTED_IN", "activity_count"),
+            "Artist":   ("LISTENED_TO",   "play_count"),
+            "Song":     ("LISTENED_TO",   "play_count"),
+        }
+
+        with self.driver.session() as s:
+            agg = _AGG_DEGREE.get(label)
+            if agg:
+                rel_type, prop = agg
+                result = s.run(
+                    f"MATCH (n:{label}) "
+                    f"WHERE NOT toUpper(n.name) IN $excluded "
+                    f"OPTIONAL MATCH ()-[r:{rel_type}]->(n) "
+                    f"RETURN n.name AS name, "
+                    f"coalesce(sum(r.{prop}), count(r)) AS degree "
+                    f"ORDER BY degree DESC LIMIT $limit",
+                    limit=limit, excluded=excluded,
+                )
+            else:
+                result = s.run(
+                    f"MATCH (n:{label}) "
+                    f"WHERE NOT toUpper(n.name) IN $excluded "
+                    f"OPTIONAL MATCH (n)-[r]-() "
+                    f"RETURN n.name AS name, count(r) AS degree "
+                    f"ORDER BY degree DESC LIMIT $limit",
+                    limit=limit, excluded=excluded,
+                )
+            return [{"name": r["name"], "degree": r["degree"]} for r in result]
+
+    def interest_profile(self, self_name: str = "ME") -> dict[str, float]:
+        """
+        Returns {interest_name: percentage} for the self-identity node.
+        Queries INTERESTED_IN relationships from the Person node and
+        computes relative percentages.
         """
         with self.driver.session() as s:
             result = s.run(
-                f"MATCH (n:{label}) "
-                f"OPTIONAL MATCH (n)-[r]-() "
-                f"RETURN n.name AS name, count(r) AS degree "
-                f"ORDER BY degree DESC LIMIT $limit",
-                limit=limit,
+                "MATCH (p:Person {name: $name})-[r:INTERESTED_IN]->(i:Interest) "
+                "RETURN i.name AS interest, "
+                "       CASE WHEN r.weight IS NOT NULL THEN r.weight ELSE 1.0 END AS weight "
+                "ORDER BY weight DESC",
+                name=self_name,
             )
-            return [{"name": r["name"], "degree": r["degree"]} for r in result]
+            rows = [(r["interest"], r["weight"]) for r in result]
+
+        if not rows:
+            return {}
+
+        total = sum(w for _, w in rows) or 1
+        return {name: round(w / total * 100, 1) for name, w in rows}
 
 
 def get_client(uri: str | None = None, user: str | None = None,

@@ -1,31 +1,34 @@
 """
-ui/sidebar.py — Streamlit sidebar: connections status, LLM settings, RAG settings.
+ui/sidebar.py — Streamlit sidebar: connection status + settings button.
+
+Navigation is handled by st.navigation() in app.py, which renders
+page links in the sidebar automatically. This module adds connection
+status indicators and a settings button below the navigation.
 """
 import streamlit as st
 import ollama
 
-from config import (
-    DEFAULT_MODEL, DEFAULT_OLLAMA, DEFAULT_CTX,
-    NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
-)
+from config import DEFAULT_OLLAMA, NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+from ui.settings import _settings_dialog, init_settings_defaults
 
 
 def render_sidebar(collection, episodic):
     """
-    Renders the sidebar and returns:
-        (model, ollama_host, num_ctx, n_results, top_k, do_rerank, hybrid,
-         neo4j_uri, neo4j_user, neo4j_password)
+    Renders connection status indicators and a settings button in the sidebar.
+    Called after st.navigation() so the nav links appear first.
     """
-    with st.sidebar:
-        st.markdown("## 🧠 Virtual Me")
-        st.divider()
+    init_settings_defaults()
 
-        # Connection status
+    with st.sidebar:
+        st.divider()
         st.markdown("**Connections**")
+
+        # ── ChromaDB status ───────────────────────────────────────────────
         count = collection.count()
         st.markdown(f'<span class="status-ok">● ChromaDB</span> — {count:,} docs',
                     unsafe_allow_html=True)
 
+        # ── Episodic Memory status ────────────────────────────────────────
         if episodic:
             ec = episodic.count()
             st.markdown(f'<span class="status-ok">● Episodic Memory</span> — {ec:,} episodes',
@@ -34,13 +37,8 @@ def render_sidebar(collection, episodic):
             st.markdown('<span class="status-warn">○ Episodic Memory</span> — not found',
                         unsafe_allow_html=True)
 
-        st.divider()
-
-        # LLM settings
-        st.markdown("**LLM Settings**")
-        ollama_host = st.text_input("Ollama host", value=DEFAULT_OLLAMA, key="ollama_host")
-
-        # Live Ollama connectivity check + model picker
+        # ── Ollama status ─────────────────────────────────────────────────
+        ollama_host = st.session_state.get("ollama_host", DEFAULT_OLLAMA)
         try:
             _client = ollama.Client(host=ollama_host)
             _models = [m["model"] for m in _client.list().get("models", [])]
@@ -49,37 +47,30 @@ def render_sidebar(collection, episodic):
                 f'({len(_models)} model{"s" if len(_models) != 1 else ""})',
                 unsafe_allow_html=True,
             )
-            _default_idx = _models.index(DEFAULT_MODEL) if DEFAULT_MODEL in _models else 0
-            model = st.selectbox("Model", _models, index=_default_idx, key="model")
         except Exception as _e:
             st.markdown('<span class="status-err">○ Ollama</span> — unreachable',
                         unsafe_allow_html=True)
-            st.caption(f"Error: {_e}")
-            model = st.text_input("Model (manual)", value=DEFAULT_MODEL, key="model")
 
-        num_ctx = st.select_slider(
-            "Context window",
-            options=[8192, 16384, 32768, 65536],
-            value=DEFAULT_CTX,
-            format_func=lambda x: f"{x//1024}k",
-            key="num_ctx",
-        )
+        # ── Neo4j status ──────────────────────────────────────────────────
+        neo4j_uri = st.session_state.get("neo4j_uri", NEO4J_URI)
+        try:
+            from neo4j import GraphDatabase
+            _driver = GraphDatabase.driver(
+                neo4j_uri,
+                auth=(
+                    st.session_state.get("neo4j_user", NEO4J_USER),
+                    st.session_state.get("neo4j_password", NEO4J_PASSWORD),
+                ),
+            )
+            _driver.verify_connectivity()
+            _driver.close()
+            st.markdown('<span class="status-ok">● Neo4j</span> — connected',
+                        unsafe_allow_html=True)
+        except Exception:
+            st.markdown('<span class="status-warn">○ Neo4j</span> — not connected',
+                        unsafe_allow_html=True)
 
+        # ── Settings button ───────────────────────────────────────────────
         st.divider()
-        st.markdown("**RAG Settings**")
-        n_results = st.slider("Retrieve (vector search)", 5, 100, 30, key="n_results",
-                              help="How many candidates to fetch from ChromaDB before reranking")
-        top_k = st.slider("Keep top-k (after reranking)", 1, 30, 10, key="top_k",
-                          help="Cross-encoder reranker keeps the best k documents from the candidates")
-        do_rerank = st.toggle("Enable reranking", value=True, key="do_rerank")
-        hybrid    = st.toggle("Hybrid search (semantic + BM25)", value=True, key="hybrid",
-                              help="Combines vector search with BM25 keyword search via Reciprocal Rank Fusion")
-
-        st.divider()
-        st.markdown("**Neo4j Settings**")
-        neo4j_uri = st.text_input("Neo4j URI", value=NEO4J_URI, key="neo4j_uri")
-        neo4j_user = st.text_input("Neo4j User", value=NEO4J_USER, key="neo4j_user")
-        neo4j_password = st.text_input("Neo4j Password", value=NEO4J_PASSWORD, type="password", key="neo4j_password")
-
-        return model, ollama_host, num_ctx, n_results, top_k, do_rerank, hybrid, \
-               neo4j_uri, neo4j_user, neo4j_password
+        if st.button("Settings", width="stretch", icon=":material/settings:"):
+            _settings_dialog()

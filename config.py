@@ -6,7 +6,7 @@ from pathlib import Path
 
 # ── ChromaDB ──────────────────────────────────
 CHROMA_PATH       = "./.chroma_data"
-COLLECTION_NAME   = "romain_brain"
+COLLECTION_NAME   = "virtual_me_knowledge"
 EPISODIC_NAME     = "episodic_memory"
 NAME_MAPPING_FILE = "./conversation_names.json"
 
@@ -21,6 +21,21 @@ DEFAULT_CTX    = 32768
 # ── Embedding ─────────────────────────────────
 # NOTE: Changing this requires re-ingesting all ChromaDB collections.
 EMBEDDING_MODEL = os.environ.get("EMBEDDING_MODEL", "BAAI/bge-m3")
+
+# Popular multilingual / English embedding models (shown in Settings picker).
+EMBEDDING_MODELS = [
+    "BAAI/bge-m3",
+    "BAAI/bge-large-en-v1.5",
+    "BAAI/bge-base-en-v1.5",
+    "BAAI/bge-small-en-v1.5",
+    "sentence-transformers/all-MiniLM-L6-v2",
+    "sentence-transformers/all-mpnet-base-v2",
+    "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+    "intfloat/multilingual-e5-large",
+    "intfloat/e5-large-v2",
+    "intfloat/e5-base-v2",
+    "nomic-ai/nomic-embed-text-v1.5",
+]
 
 # ── Neo4j ─────────────────────────────────────
 NEO4J_URI      = os.environ.get("NEO4J_URI",      "bolt://localhost:7687")
@@ -37,7 +52,7 @@ SOURCES = [
     {
         "id":            "facebook",
         "label":         "Facebook Messages",
-        "icon":          "💬",
+        "icon":          "chat",
         "color":         "#4267B2",
         "chroma_source": "facebook_windowed",
         "data_folder":   "facebook",
@@ -49,7 +64,7 @@ SOURCES = [
     {
         "id":            "google",
         "label":         "Google Locations",
-        "icon":          "🗺️",
+        "icon":          "map",
         "color":         "#34A853",
         "chroma_source": "google_locations",
         "data_folder":   "google",
@@ -61,7 +76,7 @@ SOURCES = [
     {
         "id":            "spotify",
         "label":         "Spotify Sessions",
-        "icon":          "🎵",
+        "icon":          "music_note",
         "color":         "#1DB954",
         "chroma_source": "spotify",
         "data_folder":   "spotify",

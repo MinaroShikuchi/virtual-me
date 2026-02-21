@@ -19,7 +19,7 @@ from config import EMBEDDING_MODEL
 
 # --- CONFIGURATION ---
 CHROMA_PATH = "./.chroma_data"
-COLLECTION_NAME = "romain_brain"
+COLLECTION_NAME = "virtual_me_knowledge"
 EPISODIC_COLLECTION_NAME = "episodic_memory"
 OLLAMA_HOST = "http://192.168.32.1:11434"
 OLLAMA_MODEL = "deepseek-r1:14b"
@@ -59,14 +59,14 @@ try:
     chroma_path_expanded = os.path.expanduser(CHROMA_PATH)
     client = chromadb.PersistentClient(path=chroma_path_expanded)
     
-    collection = client.get_collection(
+    collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
         embedding_function=embedding_func
     )
     
     # Try to get episodic memory, but don't fail if it doesn't exist yet
     try:
-        episodic_collection = client.get_collection(
+        episodic_collection = client.get_or_create_collection(
             name=EPISODIC_COLLECTION_NAME,
             embedding_function=embedding_func
         )

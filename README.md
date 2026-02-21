@@ -91,7 +91,7 @@ embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
     model_name="all-MiniLM-L6-v2"
 )
 collection = client.get_collection(
-    name="romain_brain",
+    name="virtual_me_knowledge",
     embedding_function=embedding_func
 )
 

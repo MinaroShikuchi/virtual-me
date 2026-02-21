@@ -7,14 +7,21 @@ into a persistent ChromaDB instance running in Docker.
 
 import json
 import os
+import sys
+
+# Ensure project root is on sys.path so `config` is importable when run standalone
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import chromadb
 from chromadb.utils import embedding_functions
-from config import COLLECTION_NAME, CHROMA_PATH, EMBEDDING_MODEL
+from config import COLLECTION_NAME, CHROMA_PATH, EMBEDDING_MODEL  # noqa: E402
 
 def ingest_messages(
     json_file: str = "facebook_messages.json",
     chroma_path: str = ".chroma_data",
-    collection_name: str = "romain_brain",
+    collection_name: str = "virtual_me_knowledge",
     batch_size: int = 1000,
     session_gap_seconds: int = 8 * 3600,
     max_msgs_per_doc: int = 150,
@@ -31,7 +38,13 @@ def ingest_messages(
     """
     # Load messages
     print(f"Loading messages from {json_file}...")
-    with open(json_file) as f:
+    json_path = os.path.abspath(json_file)
+    if not os.path.isfile(json_path):
+        print(f"\n❌ File not found: {json_path}")
+        print("   Please run the extraction step first (Step 1 in the Vector page)")
+        print("   or check that the path is correct.")
+        sys.exit(1)
+    with open(json_path) as f:
         messages = json.load(f)
     
     print(f"Loaded {len(messages)} messages")
@@ -196,7 +209,7 @@ if __name__ == "__main__":
                         help="Path to extracted messages JSON")
     parser.add_argument("--chroma-path",  default=".chroma_data",
                         help="Path to ChromaDB persistent storage")
-    parser.add_argument("--collection",   default="romain_brain",
+    parser.add_argument("--collection",   default="virtual_me_knowledge",
                         help="ChromaDB collection name")
     parser.add_argument("--batch-size",   type=int,   default=1000)
     parser.add_argument("--session-gap",  type=int,   default=8*3600,

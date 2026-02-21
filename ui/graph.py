@@ -15,14 +15,15 @@ from pathlib import Path
 import streamlit as st
 
 from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, SELF_NAME
-from graph.neo4j_client import Neo4jClient, ENTITY_LABELS, REL_TYPES, get_client
+from graph.constants import ENTITY_LABELS, REL_TYPES, LABEL_COLORS, REL_ICONS
+from graph.neo4j_client import Neo4jClient, get_client
 
 # ── Extractor groups ────────────────────────────────────────────────────────
 PLATFORMS = [
     {
         "id": "facebook",
         "label": "Facebook",
-        "icon": "💬",
+        "icon": "chat",
         "color": "#1877F2",
         "logo_url": "https://upload.wikimedia.org/wikipedia/commons/b/b8/2021_Facebook_icon.svg",
         "extractors": [
@@ -31,19 +32,24 @@ PLATFORMS = [
                 "script": "tools/extractors/facebook_messages.py",
                 "args": lambda cfg: ["--json-file", cfg.get("json_file", "facebook_messages.json"), "--self-name", cfg.get("self_name", SELF_NAME)],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload messages.json", type=["json"], key="fb_msg_up")},
+                "entities": ["Person", "Place", "Company", "Interest"],
+                "relationships": ["MET", "VISITED", "LIVES_IN", "WORKS_AT", "INTERESTED_IN",
+                                  "PARTNER_OF", "FAMILY_OF", "COLLEAGUE_OF", "FRIEND_OF"],
             },
             {
                 "label": "Friends / Contacts",
                 "script": "tools/extractors/facebook_contacts.py",
                 "args": lambda cfg: ["--self-name", cfg.get("self_name", SELF_NAME)],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload friends.json", type=["json"], key="fb_fr_up")},
+                "entities": ["Person"],
+                "relationships": ["FRIEND_OF"],
             },
         ]
     },
     {
         "id": "linkedin",
         "label": "LinkedIn",
-        "icon": "💼",
+        "icon": "work",
         "color": "#0A66C2",
         "logo_url": "https://upload.wikimedia.org/wikipedia/commons/c/ca/LinkedIn_logo_initials.png",
         "extractors": [
@@ -52,6 +58,8 @@ PLATFORMS = [
                 "script": "tools/extractors/linkedin_positions.py",
                 "args": lambda cfg: ["--csv-file", cfg.get("csv_file", "Positions.csv"), "--self-name", cfg.get("self_name", SELF_NAME)],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Positions.csv", type=["csv"], key="li_pos_up")},
+                "entities": ["Person", "Company", "Place"],
+                "relationships": ["WORKS_AT", "LIVES_IN"],
             },
             {
                 "label": "Connections",
@@ -62,6 +70,8 @@ PLATFORMS = [
                     "--self-name",      cfg.get("self_name", SELF_NAME),
                 ],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Connections.csv", type=["csv"], key="li_conn_up")},
+                "entities": ["Person", "Company"],
+                "relationships": ["KNOWS", "WORKS_AT", "COLLEAGUE_OF"],
             },
             {
                 "label": "Education",
@@ -71,13 +81,15 @@ PLATFORMS = [
                     "--self-name", cfg.get("self_name", SELF_NAME),
                 ],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Education.csv", type=["csv"], key="li_edu_up")},
+                "entities": ["Person", "School"],
+                "relationships": ["STUDIED_AT"],
             },
         ]
     },
     {
         "id": "spotify",
         "label": "Spotify",
-        "icon": "🎵",
+        "icon": "music_note",
         "color": "#1DB954",
         "logo_url": "https://upload.wikimedia.org/wikipedia/commons/1/19/Spotify_logo_without_text.svg",
         "extractors": [
@@ -85,14 +97,16 @@ PLATFORMS = [
                 "label": "Listening History",
                 "script": "tools/extractors/spotify.py",
                 "args": lambda cfg: ["--data-dir", cfg.get("data_dir", "data/spotify"), "--self-name", cfg.get("self_name", SELF_NAME)],
-                "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Spotify History", type=["json"], key="sp_up")},
+                "extra_fields": lambda: {"uploaded_files": st.file_uploader("Upload Streaming History JSON files", type=["json"], key="sp_up", accept_multiple_files=True)},
+                "entities": ["Person", "Artist", "Song", "Activity", "Device"],
+                "relationships": ["LISTENED_TO", "INTERESTED_IN", "USED_DEVICE"],
             }
         ]
     },
     {
         "id": "google",
         "label": "Google",
-        "icon": "🗺️",
+        "icon": "map",
         "color": "#4285F4",
         "logo_url": "https://upload.wikimedia.org/wikipedia/commons/c/c1/Google_%22G%22_logo.svg",
         "extractors": [
@@ -101,49 +115,47 @@ PLATFORMS = [
                 "script": "tools/extractors/google_timeline.py",
                 "args": lambda cfg: ["--records", cfg.get("records", "Records.json"), "--self-name", cfg.get("self_name", SELF_NAME)],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Records.json", type=["json"], key="gl_up")},
+                "entities": ["Person", "Place"],
+                "relationships": ["VISITED", "LIVES_IN"],
             }
         ]
     },
     {
         "id": "strava",
         "label": "Strava",
-        "icon": "🏃",
+        "icon": "directions_run",
         "color": "#FC6100",
         "logo_url": "https://upload.wikimedia.org/wikipedia/commons/c/cb/Strava_Logo.svg",
         "extractors": [
             {
                 "label": "Activities",
                 "script": "tools/extractors/strava.py",
-                "args": lambda cfg: ["--data-dir", cfg.get("data_dir", "data/strava"), "--self-name", cfg.get("self_name", SELF_NAME)],
-                "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Strava", type=["json"], key="st_up")},
+                "args": lambda cfg: (
+                    ["--csv-file", cfg["csv_file"], "--self-name", cfg.get("self_name", SELF_NAME)]
+                    if "csv_file" in cfg else
+                    ["--data-dir", cfg.get("data_dir", "data/strava"), "--self-name", cfg.get("self_name", SELF_NAME)]
+                ),
+                "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload activities.csv", type=["csv", "json"], key="st_up")},
+                "entities": ["Person", "Activity"],
+                "relationships": ["INTERESTED_IN"],
             }
         ]
     },
 ]
 
-# ── Entity colour palette ─────────────────────────────────────────────────────
-_LABEL_COLORS = {
-    "Person":   "#6366f1",
-    "Place":    "#22c55e",
-    "Song":     "#f59e0b",
-    "Artist":   "#ec4899",
-    "Company":  "#0ea5e9",
-    "Game":     "#8b5cf6",
-    "Activity": "#14b8a6",
-    "Interest": "#f97316",
-}
+# LABEL_COLORS, REL_ICONS imported from graph.constants above
 
 
-def _stat_card(label: str, value: int, color: str, selected: bool = False) -> str:
-    border = f"2px solid {color}" if selected else f"1px solid {color}40"
-    bg     = f"{color}28"         if selected else f"{color}12"
-    return (
-        f'<div style="background:{bg};border:{border};'
-        f'border-left:4px solid {color};border-radius:10px;'
-        f'padding:14px 16px;text-align:center;cursor:pointer;">'
-        f'<div style="font-size:1.6rem;font-weight:800;color:{color}">{value:,}</div>'
-        f'<div style="font-size:0.72rem;color:#94a3b8;margin-top:2px">{label}</div>'
-        f'</div>'
+
+def _scrollable_log(container, lines: list[str], max_height: int = 300):
+    """Render log lines inside a scrollable container with monospace font."""
+    escaped = "\n".join(lines).replace("&", "&").replace("<", "<").replace(">", ">")
+    container.markdown(
+        f'<div style="max-height:{max_height}px;overflow-y:auto;'
+        f'background:#0e1117;border:1px solid #333;border-radius:6px;'
+        f'padding:10px;font-family:monospace;font-size:13px;'
+        f'white-space:pre-wrap;color:#ccc;">{escaped}</div>',
+        unsafe_allow_html=True,
     )
 
 
@@ -165,8 +177,8 @@ def _try_connect(uri=None, user=None, password=None) -> tuple[Neo4jClient | None
 # ── Main render function ──────────────────────────────────────────────────────
 
 def render_graph_tab(neo4j_uri=None, neo4j_user=None, neo4j_password=None):
-    st.markdown("### 🕸️ Knowledge Graph")
-    st.caption("Extract entities & relationships from your data sources and store them in Neo4j.")
+    st.markdown("### :material/hub: Knowledge Graph")
+    st.caption("Episodic memory stored in Neo4j — extract entities & relationships from your data sources.")
 
     # ── Connection banner ──
     client, alive = _try_connect(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
@@ -189,44 +201,58 @@ def render_graph_tab(neo4j_uri=None, neo4j_user=None, neo4j_password=None):
 
     # ── Graph stats ──
     st.divider()
-    st.markdown("#### 📊 Graph Statistics  <span style='font-size:0.8rem;color:#888;'>click a type to explore top 10</span>", unsafe_allow_html=True)
+    st.markdown("#### :material/bar_chart: Graph Statistics  <span style='font-size:0.8rem;color:#888;'>click a type to explore top 10</span>", unsafe_allow_html=True)
     try:
         stats      = client.graph_stats()
         sel_key    = "graph_selected_label"
         chart_data = None
 
-        # ── Entity type buttons ──
+        # ── Entity type colored buttons ──
         ent_cols = st.columns(len(ENTITY_LABELS))
         for col, label in zip(ent_cols, ENTITY_LABELS):
-            color  = _LABEL_COLORS.get(label, "#6366f1")
             count  = stats.get(label, 0)
             is_sel = st.session_state.get(sel_key) == label
-            # Colored stat card (visual)
-            col.markdown(_stat_card(label, count, color, selected=is_sel),
-                         unsafe_allow_html=True)
-            # Invisible click button overlaid via CSS
-            col.markdown(
-                f"<style>div[data-testid='column']:has(button[data-testid='baseButton-secondary'][aria-label='{label}']){{margin-top:-78px}}</style>",
-                unsafe_allow_html=True,
-            )
-            if col.button(" ", key=f"stat_btn_{label}", help=f"Explore top {label} nodes",
-                          use_container_width=True, args=None):
-                st.session_state[sel_key] = None if is_sel else label
-                st.rerun()
+            with col:
+                if st.button(
+                    f"{label}  {count:,}",
+                    key=f"stat_btn_{label}",
+                    help=f"Explore top {label} nodes",
+                    use_container_width=True,
+                    type="primary" if is_sel else "secondary",
+                ):
+                    st.session_state[sel_key] = None if is_sel else label
+                    st.rerun()
 
-        # ── Relationship counts ──
-        st.markdown("")
-        rel_cols = st.columns(len(REL_TYPES))
-        for col, rel in zip(rel_cols, REL_TYPES):
-            col.metric(f"→{rel}", f"{stats.get(f'→{rel}', 0):,}")
+        # ── Relationship counts (compact pill strip with Material icons) ──
+        pills_html = "".join(
+            f'<span style="display:inline-flex;align-items:center;gap:4px;'
+            f'background:#1e293b;border:1px solid #334155;'
+            f'border-radius:20px;padding:4px 12px;margin:3px 4px;font-size:0.78rem;'
+            f'color:#cbd5e1;white-space:nowrap;">'
+            f'<span class="material-symbols-outlined" style="font-size:16px;color:#94a3b8">'
+            f'{REL_ICONS.get(rel, "arrow_forward")}</span>'
+            f' <b style="color:#e2e8f0">{rel.replace("_"," ")}</b>'
+            f' <span style="color:#6366f1;font-weight:700">{stats.get(f"→{rel}", 0):,}</span>'
+            f'</span>'
+            for rel in REL_TYPES
+        )
+        st.markdown(
+            f'<div style="display:flex;flex-wrap:wrap;gap:2px;margin-top:8px;">'
+            f'{pills_html}</div>',
+            unsafe_allow_html=True,
+        )
 
         # ── Top-10 radar chart ──
         selected = st.session_state.get(sel_key)
         if selected:
             try:
                 import plotly.graph_objects as go
-                color    = _LABEL_COLORS.get(selected, "#6366f1")
-                top_rows = client.top_nodes_by_degree(selected, limit=10)
+                color    = LABEL_COLORS.get(selected, "#6366f1")
+                # Exclude the self-identity node (e.g. "ME") from the chart
+                self_name = st.session_state.get("kg_self_name", SELF_NAME)
+                top_rows = client.top_nodes_by_degree(
+                    selected, limit=10, exclude_names=[self_name, "ME"],
+                )
                 if top_rows:
                     names   = [r["name"]   for r in top_rows]
                     degrees = [r["degree"] for r in top_rows]
@@ -245,7 +271,12 @@ def render_graph_tab(neo4j_uri=None, neo4j_user=None, neo4j_password=None):
                         fillcolor     = _hex_to_rgba(color, 0.18),
                         line          = dict(color=color, width=2),
                         marker        = dict(size=6, color=color),
-                        hovertemplate = "<b>%{theta}</b><br>Connections: %{r}<extra></extra>",
+                        hovertemplate = "<b>%{theta}</b><br>"
+                                        + ({"Activity": "Activities: %{r}",
+                                            "Artist":   "Songs listened: %{r}",
+                                            "Song":     "Listens: %{r}",
+                                           }.get(selected, "Connections: %{r}"))
+                                        + "<extra></extra>",
                     ))
                     fig.update_layout(
                         polar=dict(
@@ -267,14 +298,25 @@ def render_graph_tab(neo4j_uri=None, neo4j_user=None, neo4j_password=None):
                         margin        = dict(l=70, r=70, t=30, b=30),
                         height        = 360,
                     )
-                    st.markdown(f"##### Top {len(top_rows)} **{selected}** nodes by connections")
-                    st.plotly_chart(fig, use_container_width=True)
+                    metric = {"Activity": "activities", "Artist": "songs listened",
+                              "Song": "listens"}.get(selected, "connections")
+                    st.markdown(f"##### Top {len(top_rows)} **{selected}** nodes by {metric}")
+                    st.plotly_chart(fig)
                 else:
                     st.info(f"No {selected} nodes in the graph yet.")
             except ImportError:
                 st.info("Install plotly to see charts: `pip install plotly`")
             except Exception as ex:
                 st.warning(f"Could not load top nodes: {ex}")
+
+        # ── Interest profile spider chart (from Neo4j) ──
+        try:
+            self_name = st.session_state.get("kg_self_name", SELF_NAME)
+            interest_data = client.interest_profile(self_name=self_name)
+            if interest_data:
+                _render_interest_chart_from_data(interest_data)
+        except Exception as ex:
+            pass  # silently skip if no interest data
 
     except Exception as e:
         st.warning(f"Could not load stats: {e}")
@@ -348,8 +390,8 @@ def _render_interest_chart(chart_key: str):
         )
 
         top_interest = categories[0] if categories else "—"
-        st.markdown(f"#### 🕷️ Your Interest Profile  ·  Top: **{top_interest.capitalize()}**")
-        st.plotly_chart(fig, use_container_width=True)
+        st.markdown(f"#### :material/radar: Your Interest Profile  ·  Top: **{top_interest.capitalize()}**")
+        st.plotly_chart(fig)
 
     except ImportError:
         st.info("Install plotly (`pip install plotly`) to see the interest chart.")
@@ -357,13 +399,78 @@ def _render_interest_chart(chart_key: str):
         st.warning(f"Could not render interest chart: {e}")
 
 
+def _render_interest_chart_from_data(data: dict):
+    """Renders a Plotly radar chart from interest profile data {name: percentage}."""
+    if not data:
+        return
+
+    try:
+        import plotly.graph_objects as go
+
+        # Sort by percentage descending
+        sorted_items = sorted(data.items(), key=lambda x: x[1], reverse=True)
+        categories = [k for k, _ in sorted_items]
+        values     = [v for _, v in sorted_items]
+
+        # Close the radar polygon
+        cats_closed = categories + [categories[0]]
+        vals_closed = values    + [values[0]]
+
+        COLOR = "#6366f1"
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatterpolar(
+            r            = vals_closed,
+            theta        = cats_closed,
+            fill         = "toself",
+            fillcolor    = _hex_to_rgba(COLOR, 0.18),
+            line         = dict(color=COLOR, width=2),
+            marker       = dict(size=6, color=COLOR),
+            name         = "Interests",
+            hovertemplate = "<b>%{theta}</b><br>Score: %{r:.1f}%<extra></extra>",
+        ))
+
+        fig.update_layout(
+            polar=dict(
+                bgcolor    = "rgba(0,0,0,0)",
+                radialaxis = dict(
+                    visible   = True,
+                    range     = [0, max(values) * 1.15],
+                    tickfont  = dict(size=10, color="#aaa"),
+                    gridcolor = "#333",
+                    linecolor = "#444",
+                ),
+                angularaxis = dict(
+                    tickfont  = dict(size=12, color="#ddd"),
+                    gridcolor = "#333",
+                    linecolor = "#444",
+                ),
+            ),
+            paper_bgcolor = "rgba(0,0,0,0)",
+            plot_bgcolor  = "rgba(0,0,0,0)",
+            showlegend    = False,
+            margin        = dict(l=60, r=60, t=40, b=40),
+            height        = 400,
+        )
+
+        top_interest = categories[0] if categories else "—"
+        st.divider()
+        st.markdown(f"#### :material/radar: Interest Profile  ·  Top: **{top_interest.capitalize()}**")
+        st.plotly_chart(fig)
+
+    except ImportError:
+        pass
+    except Exception:
+        pass
+
+
 def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
-    st.markdown("#### ⚙️ Run Extractors")
+    st.markdown("#### :material/manufacturing: Run Extractors")
     if not alive:
         st.info("Connect Neo4j first to run extractors.")
 
     # Global settings
-    gcol1, gcol2, gcol3 = st.columns([2, 1, 1])
+    gcol1, gcol2, gcol3 = st.columns([2, 1, 1], vertical_alignment="bottom")
     with gcol1:
         self_name = st.text_input(
             "Your name in the graph",
@@ -372,11 +479,11 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
             help="This anchors 'you' as a Person node in the graph",
         )
     with gcol2:
-        dry_run = st.toggle("Dry run (no writes)", value=True, key="kg_dry_run",
-                            help="Print extracted triples without writing to Neo4j")
-    with gcol3:
         limit = st.number_input("Limit chunks (0 = all)", min_value=0, value=0,
                                 step=500, key="kg_limit")
+    with gcol3:
+        dry_run = st.toggle("Dry run (no writes)", value=True, key="kg_dry_run",
+                            help="Print extracted triples without writing to Neo4j")
 
     st.markdown("")
 
@@ -417,13 +524,64 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
             ext = next(e for e in platform["extractors"] if e["label"] == chosen_label)
             log_key = f"log_{platform['id']}_{ext['label']}"
 
+            # ── Affected entities & relationships ─────────────────────────
+            _ent_list = ext.get("entities", [])
+            _rel_list = ext.get("relationships", [])
+            if _ent_list or _rel_list:
+                _ent_pills = "".join(
+                    f'<span style="display:inline-flex;align-items:center;gap:3px;'
+                    f'background:{LABEL_COLORS.get(e, "#6366f1")}20;'
+                    f'color:{LABEL_COLORS.get(e, "#6366f1")};'
+                    f'border:1px solid {LABEL_COLORS.get(e, "#6366f1")}40;'
+                    f'border-radius:12px;padding:2px 10px;font-size:0.75rem;'
+                    f'font-weight:600;">'
+                    f'<span class="material-symbols-outlined" style="font-size:14px">category</span>'
+                    f'{e}</span>'
+                    for e in _ent_list
+                )
+                _rel_pills = "".join(
+                    f'<span style="display:inline-flex;align-items:center;gap:3px;'
+                    f'background:#33415520;color:#94a3b8;'
+                    f'border:1px solid #33415540;'
+                    f'border-radius:12px;padding:2px 10px;font-size:0.75rem;'
+                    f'font-weight:500;">'
+                    f'<span class="material-symbols-outlined" style="font-size:14px">'
+                    f'{REL_ICONS.get(r, "link")}</span>'
+                    f'{r}</span>'
+                    for r in _rel_list
+                )
+                st.markdown(
+                    f'<div style="display:flex;flex-wrap:wrap;gap:6px;'
+                    f'align-items:center;margin:4px 0 10px 0;">'
+                    f'<span style="font-size:0.7rem;color:#64748b;font-weight:600;'
+                    f'margin-right:2px;">Entities</span>{_ent_pills}'
+                    f'<span style="font-size:0.7rem;color:#64748b;font-weight:600;'
+                    f'margin-left:8px;margin-right:2px;">Relationships</span>{_rel_pills}'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
             # ── File upload ───────────────────────────────────────────────
             cfg = ext["extra_fields"]()
-            up_file = cfg.pop("uploaded_file", None)
+            up_file  = cfg.pop("uploaded_file", None)
+            up_files = cfg.pop("uploaded_files", None)
             cfg["self_name"] = self_name
 
             target_path = None
-            if up_file:
+
+            # Handle multi-file uploads (e.g. Spotify streaming history)
+            if up_files:
+                target_dir = Path("data") / platform["id"]
+                target_dir.mkdir(parents=True, exist_ok=True)
+                for uf in up_files:
+                    fpath = target_dir / uf.name
+                    with open(fpath, "wb") as wf:
+                        wf.write(uf.getbuffer())
+                cfg["data_dir"] = str(target_dir)
+                st.caption(f"📁 {len(up_files)} file(s) saved to `{target_dir}`")
+
+            # Handle single-file uploads
+            elif up_file:
                 target_dir = Path("data") / platform["id"]
                 target_dir.mkdir(parents=True, exist_ok=True)
                 target_path = target_dir / up_file.name
@@ -435,22 +593,28 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
                     cfg["records"] = str(target_path)
                 elif platform["id"] == "linkedin":
                     cfg["csv_file"] = str(target_path)
-                elif platform["id"] in ["spotify", "strava"]:
+                elif platform["id"] == "spotify":
                     cfg["data_dir"] = str(target_dir)
+                elif platform["id"] == "strava":
+                    if up_file.name.endswith(".csv"):
+                        cfg["csv_file"] = str(target_path)
+                    else:
+                        cfg["data_dir"] = str(target_dir)
 
             # ── Persistent log display ─────────────────────────────────────
             log_box = st.empty()
             if st.session_state.get(log_key):
-                log_box.code("\n".join(st.session_state[log_key]), language="")
+                _scrollable_log(log_box, st.session_state[log_key])
 
             # ── Run button ──────────────────────────────────────────────────
             run_col, _ = st.columns([1, 3])
             with run_col:
                 run_clicked = st.button(
-                    f"▶️ Run {ext['label']}",
+                    f"Run {ext['label']}",
                     key=f"run_{platform['id']}_{ext['label']}",
                     disabled=not (alive or dry_run),
-                    use_container_width=True,
+                    width="stretch",
+                    icon=":material/play_arrow:",
                 )
 
                         
@@ -493,33 +657,33 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
                                    ["[ENT]", "[REL]", "📊", "✅", "❌",
                                     "🕵", "🏠", "📦", "💼", "📂"]):
                                 lines.append(ls)
-                                log_box.code("\n".join(lines[-100:]), language="")
+                                _scrollable_log(log_box, lines[-100:])
                         proc.wait()
 
                     pbar.empty()
                     st.session_state[log_key] = lines
                     if lines:
-                        log_box.code("\n".join(lines), language="")
+                        _scrollable_log(log_box, lines)
 
                     # ── Interest spider chart (Facebook Messages only) ─────
                     chart_key = f"chart_{platform['id']}_{ext['label']}"
                     _render_interest_chart(chart_key)
 
                     if proc.returncode == 0:
-                        st.success(f"✅ {ext['label']} finished successfully.")
-                        if st.button("🔄 Refresh graph stats",
+                        st.success(f"{ext['label']} finished successfully.")
+                        if st.button("Refresh graph stats", icon=":material/refresh:",
                                      key=f"refresh_{platform['id']}_{ext['label']}"):
                             st.rerun()
                     else:
                         st.error(
-                            f"❌ Extraction failed (exit code {proc.returncode}). "
+                            f"Extraction failed (exit code {proc.returncode}). "
                             "Check the log above — make sure the uploaded file "
                             "matches the expected format."
                         )
 
 
 def _render_browser(uri=None, user=None, password=None):
-    st.markdown("#### 🔎 Entity Browser")
+    st.markdown("#### :material/search: Entity Browser")
     b1, b2 = st.columns([1, 3])
     with b1:
         label = st.selectbox("Entity type", ENTITY_LABELS, key="kg_browse_label")

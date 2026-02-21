@@ -10,14 +10,14 @@ from rag.llm import call_llm
 def _render_token_bar(prompt_tok: int, comp_tok: int, max_ctx: int):
     total = prompt_tok + comp_tok
     pct   = min(total / max_ctx, 1.0)
-    st.progress(pct, text=f"📊 {total:,} / {max_ctx:,} tokens  "
+    st.progress(pct, text=f"{total:,} / {max_ctx:,} tokens  "
                           f"(prompt: {prompt_tok:,} | response: {comp_tok:,}) "
                           f"— {pct*100:.1f}%")
 
 
 def render_chat_tab(collection, episodic, id_to_name, name_to_id,
                     model, ollama_host, num_ctx, n_results, top_k, do_rerank, hybrid):
-    st.markdown("### 💬 Chat with your memories")
+    st.markdown("### :material/chat: Chat with your memories")
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -27,7 +27,7 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
         with st.chat_message(msg["role"]):
             if msg["role"] == "assistant":
                 if msg.get("thinking"):
-                    with st.expander("💭 Thinking…", expanded=False):
+                    with st.expander("Thinking…", expanded=False, icon=":material/psychology_alt:"):
                         st.markdown(f'<div class="think-block">{msg["thinking"]}</div>',
                                     unsafe_allow_html=True)
                 st.markdown(msg["content"])
@@ -50,10 +50,10 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
             # Filter info badge
             filter_info = ""
             if strategy == "Strict (Conversation)":
-                filter_info = f"🎯 Loading full conversation with **{friend_name.title()}**"
+                filter_info = f"Loading full conversation with **{friend_name.title()}**"
                 st.info(filter_info)
             elif strategy == "Global (Mention)":
-                filter_info = f"🌎 Global search mentioning **{friend_name.title()}**"
+                filter_info = f"Global search mentioning **{friend_name.title()}**"
                 st.info(filter_info)
 
             with st.spinner("Retrieving memories…"):
@@ -80,7 +80,7 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
             if hybrid:    mode_parts.append("hybrid")
             if do_rerank: mode_parts.append(f"reranked → top-{top_k}")
             note = f" [{', '.join(mode_parts)} from {n_results}]" if mode_parts else ""
-            st.caption(f"📚 Context: {', '.join(src_parts)}{note}")
+            st.caption(f"Context: {', '.join(src_parts)}{note}")
 
             with st.spinner(f"Asking {model}…"):
                 try:
@@ -92,7 +92,7 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
                     return
 
             if thinking:
-                with st.expander("💭 Thinking…", expanded=False):
+                with st.expander("Thinking…", expanded=False, icon=":material/psychology_alt:"):
                     st.markdown(f'<div class="think-block">{thinking}</div>',
                                 unsafe_allow_html=True)
 

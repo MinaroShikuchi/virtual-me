@@ -19,7 +19,7 @@ def query_brain(
     query: str,
     n_results: int = 5,
     chroma_path: str = "./.chroma_data",
-    collection_name: str = "romain_brain"
+    collection_name: str = "virtual_me_knowledge"
 ):
     """
     Query the personal brain with semantic search.
@@ -39,7 +39,7 @@ def query_brain(
     client = chromadb.PersistentClient(path=chroma_path)
     
     # Get collection
-    collection = client.get_collection(
+    collection = client.get_or_create_collection(
         name=collection_name,
         embedding_function=embedding_func
     )

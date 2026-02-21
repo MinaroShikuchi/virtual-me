@@ -40,7 +40,7 @@ def source_chroma_counts(collection) -> dict:
 
 
 def render_dashboard_tab(collection):
-    st.markdown("### 📊 Dashboard")
+    st.markdown("### :material/dashboard: Dashboard")
 
     data_scan     = scan_data_sources()
     chroma_counts = source_chroma_counts(collection)
@@ -50,9 +50,9 @@ def render_dashboard_tab(collection):
 
     # ── Hero metrics ──
     h1, h2, h3 = st.columns(3)
-    h1.metric("🧠 Total chunks in ChromaDB", f"{total_docs:,}")
-    h2.metric("📦 Active data sources",       f"{active_srcs} / {len(SOURCES)}")
-    h3.metric("📁 Data folder",               str(DATA_DIR.resolve()))
+    h1.metric("Total chunks in ChromaDB", f"{total_docs:,}")
+    h2.metric("Active data sources",       f"{active_srcs} / {len(SOURCES)}")
+    h3.metric("Data folder",               str(DATA_DIR.resolve()))
 
     st.divider()
 
@@ -68,9 +68,9 @@ def render_dashboard_tab(collection):
         size_mb  = scan["size_mb"]
 
         if ingested > 0:
-            status_icon, status_label, status_color = "✅", f"{ingested:,} chunks", "#22c55e"
+            status_icon, status_label, status_color = "done", f"{ingested:,} chunks", "#22c55e"
         elif files:
-            status_icon, status_label, status_color = "📂", f"{len(files)} file(s) ready", "#f59e0b"
+            status_icon, status_label, status_color = "folder_open", f"{len(files)} file(s) ready", "#f59e0b"
         else:
             status_icon, status_label, status_color = "○", "No data found", "#64748b"
 
@@ -85,7 +85,7 @@ def render_dashboard_tab(collection):
                     padding: 20px 16px;
                     margin-bottom: 12px;
                 ">
-                    <div style="font-size:2rem;margin-bottom:6px">{src['icon']}</div>
+                    <div style="margin-bottom:6px"><span class="material-symbols-outlined" style="font-size:2rem;color:{src['color']}">{src['icon']}</span></div>
                     <div style="font-weight:700;font-size:1rem;color:#f1f5f9;margin-bottom:4px">{src['label']}</div>
                     <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:12px">{src['description']}</div>
                     <div style="font-size:1.6rem;font-weight:800;color:{src['color']};letter-spacing:-0.5px">
@@ -100,7 +100,7 @@ def render_dashboard_tab(collection):
                         border-radius:20px;
                         padding:2px 10px;
                         font-size:0.72rem;font-weight:600
-                    ">{status_icon} {status_label}</div>
+                    "><span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle">{status_icon}</span> {status_label}</div>
                     {f'<div style="font-size:0.68rem;color:#475569;margin-top:6px">{size_mb:.1f} MB in data/</div>' if files else ''}
                 </div>
                 """,
@@ -110,7 +110,7 @@ def render_dashboard_tab(collection):
     st.divider()
 
     # ── Memory timeline: chunks per year ──
-    st.markdown("#### 📅 Memory timeline (chunks by year)")
+    st.markdown("#### :material/timeline: Memory timeline (chunks by year)")
     try:
         raw = collection.get(include=["metadatas"])
         year_counts: dict[str, int] = {}
@@ -148,7 +148,7 @@ def render_dashboard_tab(collection):
     st.divider()
 
     # ── data/ folder status table ──
-    st.markdown("#### 📂 `data/` folder status")
+    st.markdown("#### :material/folder: `data/` folder status")
     rows = []
     for src in SOURCES:
         scan  = data_scan[src["id"]]
@@ -160,7 +160,7 @@ def render_dashboard_tab(collection):
             "Folder":    f"data/{src['data_folder']}/",
             "Files":     flist or "—",
             "Size (MB)": f"{scan['size_mb']:.1f}" if scan["files"] else "—",
-            "Status":    "✅ Ingested" if chroma_counts.get(src["chroma_source"], 0) > 0
-                         else ("📂 Ready" if scan["files"] else "○ Not found"),
+            "Status":    "Ingested" if chroma_counts.get(src["chroma_source"], 0) > 0
+                         else ("Ready" if scan["files"] else "Not found"),
         })
     st.dataframe(pd.DataFrame(rows), width="stretch", hide_index=True)

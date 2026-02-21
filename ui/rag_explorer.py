@@ -8,7 +8,7 @@ from rag.retrieval import retrieve, detect_smart_filter, build_where
 
 def render_rag_tab(collection, episodic, id_to_name, name_to_id,
                    n_results, top_k, do_rerank, hybrid):
-    st.markdown("### 🔍 RAG Explorer")
+    st.markdown("### :material/search: RAG Explorer")
     st.caption("Query ChromaDB directly to inspect retrieved documents — **no LLM call**. "
                "All filters are passed directly as ChromaDB metadata `where` clauses.")
 
@@ -24,7 +24,7 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
         selected_friend = st.selectbox("Filter by friend", friend_options, key="rag_friend")
 
     # ── Metadata filter row ──
-    with st.expander("🔧 Metadata filters", expanded=True):
+    with st.expander("Metadata filters", expanded=True, icon=":material/tune:"):
         fc1, fc2, fc3, fc4 = st.columns([2, 2, 2, 2])
         with fc1:
             date_from = st.date_input("Date from", value=None, key="rag_date_from")
@@ -68,7 +68,7 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
 
     # Show the actual where clause being sent to ChromaDB
     final_where = build_where(base_filter, metadata_filters)
-    with st.expander("🗂 ChromaDB `where` clause (debug)", expanded=False):
+    with st.expander("ChromaDB `where` clause (debug)", expanded=False, icon=":material/data_object:"):
         st.json(final_where if final_where else {"note": "no filter — full collection search"})
 
     with st.spinner("Querying ChromaDB…"):
@@ -93,11 +93,11 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
 
     # ── Episodic results ──
     if episodes:
-        st.markdown(f"#### 🧠 Episodic Memory ({len(episodes)} results)")
+        st.markdown(f"#### :material/psychology: Episodic Memory ({len(episodes)} results)")
         for ep in episodes:
             st.markdown(
                 f'<div class="rag-card">'
-                f'<div class="rag-card-header">📅 <span>{ep["date"]}</span></div>'
+                f'<div class="rag-card-header"><span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle">calendar_today</span> <span>{ep["date"]}</span></div>'
                 f'{ep["content"]}'
                 f'</div>',
                 unsafe_allow_html=True,
@@ -106,7 +106,7 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
 
     # ── Document results ──
     if docs:
-        st.markdown(f"#### 💬 Conversation Chunks ({len(docs)} results)")
+        st.markdown(f"#### :material/forum: Conversation Chunks ({len(docs)} results)")
         for i, doc in enumerate(docs, 1):
             src_badge = f" `{doc.get('source', '')}`" if doc.get("source") else ""
             score = doc.get("rerank_score")
@@ -115,10 +115,10 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
             kw_r  = doc.get("bm25_rank")
 
             badges = []
-            if score is not None: badges.append(f"🏆 rerank {score:.2f}")
+            if score is not None: badges.append(f"rerank {score:.2f}")
             if rrf   is not None: badges.append(f"RRF {rrf:.4f}")
-            if sem_r is not None: badges.append(f"🔍 #{sem_r}")
-            if kw_r  is not None: badges.append(f"🔤 #{kw_r}")
+            if sem_r is not None: badges.append(f"sem #{sem_r}")
+            if kw_r  is not None: badges.append(f"kw #{kw_r}")
             badge_str = "  " + "  ".join(badges) if badges else ""
 
             with st.expander(
@@ -128,10 +128,10 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
                 score_line = ""
                 if score is not None or rrf is not None:
                     parts = []
-                    if score is not None: parts.append(f"🏆 Rerank: <strong>{score:.4f}</strong>")
+                    if score is not None: parts.append(f"Rerank: <strong>{score:.4f}</strong>")
                     if rrf   is not None: parts.append(f"RRF: <strong>{rrf:.4f}</strong>")
-                    if sem_r is not None: parts.append(f"🔍 Semantic rank: <strong>#{sem_r}</strong>")
-                    if kw_r  is not None: parts.append(f"🔤 BM25 rank: <strong>#{kw_r}</strong>")
+                    if sem_r is not None: parts.append(f"Semantic rank: <strong>#{sem_r}</strong>")
+                    if kw_r  is not None: parts.append(f"BM25 rank: <strong>#{kw_r}</strong>")
                     score_line = (
                         f'<div style="margin-bottom:6px;font-size:0.75rem;color:#a5b4fc">'
                         + "  |  ".join(parts)
@@ -141,10 +141,10 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
                     f'<div class="rag-card">'
                     f'{score_line}'
                     f'<div class="rag-card-header">'
-                    f'📅 <span>{doc["date"]}</span> &nbsp;|&nbsp; '
-                    f'👤 <span>{doc["friend"]}</span> &nbsp;|&nbsp; '
-                    f'💬 <span>{doc["message_count"]} messages</span> &nbsp;|&nbsp; '
-                    f'🏷 <span>{doc.get("source", "—")}</span>'
+                    f'<span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle">calendar_today</span> <span>{doc["date"]}</span> &nbsp;|&nbsp; '
+                    f'<span>{doc["friend"]}</span> &nbsp;|&nbsp; '
+                    f'<span>{doc["message_count"]} messages</span> &nbsp;|&nbsp; '
+                    f'<span>{doc.get("source", "—")}</span>'
                     f'</div>'
                     f'<pre style="white-space:pre-wrap;color:#e2e8f0;font-size:0.82rem">{doc["content"]}</pre>'
                     f'</div>',

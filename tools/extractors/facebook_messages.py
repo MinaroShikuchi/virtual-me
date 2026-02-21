@@ -39,6 +39,14 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+# Ensure project root is on sys.path so `graph.*` imports work when run standalone
+_PROJECT_ROOT = str(Path(__file__).resolve().parent.parent.parent)
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
+from graph.constants import INTEREST_KEYWORDS  # noqa: E402
+from graph.neo4j_client import Neo4jClient     # noqa: E402
+
 # ── spaCy models (load lazily) ────────────────────────────────────────────────
 _nlp_fr = None
 _nlp_en  = None
@@ -63,31 +71,7 @@ def _load_nlp():
         _nlp_en = None
 
 
-# ── Interest keyword taxonomy ─────────────────────────────────────────────────
-INTEREST_KEYWORDS: dict[str, list[str]] = {
-    "gaming":  ["jeu", "jeux", "game", "gaming", "steam", "ps4", "ps5", "xbox",
-                "nintendo", "lol", "league of legends", "fortnite", "minecraft",
-                "valorant", "gta", "fifa", "cod", "call of duty", "overwatch"],
-    "music":   ["musique", "music", "concert", "festival", "rap", "hip-hop",
-                "techno", "playlist", "spotify", "album", "chanson", "track"],
-    "sport":   ["sport", "foot", "football", "soccer", "basket", "basketball",
-                "tennis", "natation", "running", "course", "velo", "vélo",
-                "gym", "fitness", "musculation", "rugby", "handball"],
-    "travel":  ["voyage", "travel", "vacances", "holiday", "trip", "paris",
-                "london", "barcelona", "new york", "tokyo", "avion", "airport",
-                "hotel", "airbnb", "roadtrip"],
-    "cinema":  ["film", "movie", "cinema", "série", "netflix", "amazon prime",
-                "disney", "marvel", "anime", "manga"],
-    "food":    ["restaurant", "bouffe", "manger", "nourriture", "food", "pizza",
-                "sushi", "burger", "cuisine", "recette", "recipe"],
-    "tech":    ["tech", "code", "programmation", "dev", "développeur",
-                "developer", "python", "javascript", "react", "startup",
-                "intelligence artificielle", "ia", "ai"],
-    "party":   ["fête", "soirée", "party", "bar", "club", "alcool",
-                "bière", "beer", "vin"],
-    "nature":  ["randonnée", "hiking", "montagne", "mountain", "forêt", "forest",
-                "plage", "beach", "camping", "nature", "trek"],
-}
+# INTEREST_KEYWORDS imported from graph.constants above
 
 
 # LIVES_IN triggers
@@ -493,11 +477,6 @@ def main():
         print("🔍 DRY RUN — no writes to Neo4j\n", flush=True)
         extract(chunks, self_name, dry_run=True)
     else:
-        # Import graph client (needs the project root on sys.path)
-        project_root = Path(__file__).resolve().parent.parent.parent
-        sys.path.insert(0, str(project_root))
-        from graph.neo4j_client import Neo4jClient
-
         with Neo4jClient(args.neo4j_uri, args.neo4j_user, args.neo4j_pass) as client:
             if not client.verify():
                 print(f"❌ Cannot connect to Neo4j at {args.neo4j_uri}", flush=True)
