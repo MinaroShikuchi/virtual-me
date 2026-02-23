@@ -391,10 +391,14 @@ def settings_dialog() -> rx.Component:
                 ),
                 # Right: content for selected tab
                 rx.box(
-                    rx.cond(SettingsState.active_tab == "llm", _llm_tab()),
-                    rx.cond(SettingsState.active_tab == "embedding", _embedding_tab()),
-                    rx.cond(SettingsState.active_tab == "rag", _rag_tab()),
-                    rx.cond(SettingsState.active_tab == "neo4j", _neo4j_tab()),
+                    rx.match(
+                        SettingsState.active_tab,
+                        ("llm", _llm_tab()),
+                        ("embedding", _embedding_tab()),
+                        ("rag", _rag_tab()),
+                        ("neo4j", _neo4j_tab()),
+                        _llm_tab(),  # default fallback
+                    ),
                     flex="1",
                     overflow_y="auto",
                     padding_left="16px",
