@@ -366,15 +366,10 @@ def settings_dialog() -> rx.Component:
     return rx.dialog.root(
         rx.dialog.content(
             rx.dialog.title("Settings"),
-            rx.dialog.description(
-                "Configure LLM, embedding, RAG, and Neo4j settings.",
-                size="2",
-                color="#94a3b8",
-            ),
             rx.divider(),
 
             # Main body: left sidebar + right content
-            rx.hstack(
+            rx.flex(
                 # Left: tab navigation sidebar
                 rx.vstack(
                     _tab_button("LLM", "llm", "bot"),
@@ -398,8 +393,9 @@ def settings_dialog() -> rx.Component:
                     padding_left="16px",
                     max_height="60vh",
                 ),
+                direction="row",
+                gap="4",
                 width="100%",
-                spacing="4",
                 flex="1",
                 overflow="hidden",
             ),
