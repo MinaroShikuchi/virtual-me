@@ -4,13 +4,17 @@ virtual_me/components/settings_dialog.py — Settings dialog (centered modal).
 import reflex as rx
 from virtual_me.state.app_state import AppState
 from config import (
-    EMBEDDING_MODELS,
+    EMBEDDING_MODELS, IDENTITIES,
     DEFAULT_MODEL, DEFAULT_INTENT_MODEL, DEFAULT_OLLAMA, DEFAULT_CTX,
     DEFAULT_SYSTEM_PROMPT, DEFAULT_DELIBERATION_ROUNDS,
     DEFAULT_ACTIVE_PERSONAS, DEFAULT_ENABLE_THINKING,
     EMBEDDING_MODEL,
     NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
 )
+
+# Pre-compute identity options and persona list at module level
+_IDENTITY_OPTIONS: list[str] = list(IDENTITIES.keys()) + ["Custom"]
+_PERSONA_OPTIONS: list[str] = [p for p in IDENTITIES.keys() if p != "The Self"]
 
 
 class SettingsState(rx.State):
@@ -28,6 +32,9 @@ class SettingsState(rx.State):
     draft_enable_thinking: bool = DEFAULT_ENABLE_THINKING
     draft_deliberation_rounds: int = DEFAULT_DELIBERATION_ROUNDS
     draft_active_personas: list[str] = DEFAULT_ACTIVE_PERSONAS
+
+    # Identity preset (derived from system prompt match)
+    draft_identity_preset: str = "The Self"
 
     # Draft Embedding
     draft_embedding_model: str = EMBEDDING_MODEL
@@ -66,6 +73,14 @@ class SettingsState(rx.State):
         self.draft_neo4j_user = app.neo4j_user
         self.draft_neo4j_password = app.neo4j_password
 
+        # Derive identity preset from current system prompt
+        self.draft_identity_preset = "Custom"
+        prompt_lower = self.draft_system_prompt.strip().lower()
+        for name, prompt_text in IDENTITIES.items():
+            if prompt_lower == prompt_text.strip().lower():
+                self.draft_identity_preset = name
+                break
+
         # Try to fetch available Ollama models
         try:
             import ollama as _ollama
@@ -101,6 +116,23 @@ class SettingsState(rx.State):
     def set_tab(self, tab: str):
         """Switch the active settings tab."""
         self.active_tab = tab
+
+    @rx.event
+    def set_identity_preset(self, value: str):
+        """Set identity preset and update system prompt accordingly."""
+        self.draft_identity_preset = value
+        if value != "Custom" and value in IDENTITIES:
+            self.draft_system_prompt = IDENTITIES[value]
+
+    @rx.event
+    def toggle_persona(self, persona: str, _checked: bool = False):
+        """Toggle a persona in/out of the active personas list."""
+        if persona in self.draft_active_personas:
+            self.draft_active_personas = [
+                p for p in self.draft_active_personas if p != persona
+            ]
+        else:
+            self.draft_active_personas = self.draft_active_personas + [persona]
 
     def set_num_ctx_from_str(self, val: str):
         """Set num_ctx from a string select value."""
@@ -192,6 +224,19 @@ class SettingsState(rx.State):
             app.close_settings()
 
 
+def _persona_checkbox(persona: str) -> rx.Component:
+    """Render a single persona checkbox."""
+    return rx.hstack(
+        rx.checkbox(
+            checked=SettingsState.draft_active_personas.contains(persona),
+            on_change=SettingsState.toggle_persona(persona),
+        ),
+        rx.text(persona, size="2"),
+        spacing="2",
+        align="center",
+    )
+
+
 def _llm_tab() -> rx.Component:
     """LLM settings tab content."""
     return rx.vstack(
@@ -202,24 +247,64 @@ def _llm_tab() -> rx.Component:
             on_change=SettingsState.set_draft_ollama_host,
             width="100%",
         ),
+        # Model — use select if models available, else text input
         rx.text("Model", size="2", weight="medium"),
-        rx.input(
-            value=SettingsState.draft_model,
-            on_change=SettingsState.set_draft_model,
-            width="100%",
+        rx.cond(
+            SettingsState.available_models.length() > 0,
+            rx.select(
+                SettingsState.available_models,
+                value=SettingsState.draft_model,
+                on_change=SettingsState.set_draft_model,
+                width="100%",
+            ),
+            rx.input(
+                value=SettingsState.draft_model,
+                on_change=SettingsState.set_draft_model,
+                placeholder="e.g. qwen2.5:7b",
+                width="100%",
+            ),
         ),
+        # Intent Model — same pattern
         rx.text("Intent Model", size="2", weight="medium"),
-        rx.input(
-            value=SettingsState.draft_intent_model,
-            on_change=SettingsState.set_draft_intent_model,
-            width="100%",
+        rx.cond(
+            SettingsState.available_models.length() > 0,
+            rx.select(
+                SettingsState.available_models,
+                value=SettingsState.draft_intent_model,
+                on_change=SettingsState.set_draft_intent_model,
+                width="100%",
+            ),
+            rx.input(
+                value=SettingsState.draft_intent_model,
+                on_change=SettingsState.set_draft_intent_model,
+                placeholder="e.g. llama3.2:3b",
+                width="100%",
+            ),
         ),
-        rx.text("Context Window", size="2", weight="medium"),
-        rx.select(
-            ["8192", "16384", "32768", "65536"],
-            value=SettingsState.draft_num_ctx.to(str),
-            on_change=SettingsState.set_num_ctx_from_str,
+        # Identity preset + Context window side by side
+        rx.hstack(
+            rx.vstack(
+                rx.text("Identity Preset", size="2", weight="medium"),
+                rx.select(
+                    _IDENTITY_OPTIONS,
+                    value=SettingsState.draft_identity_preset,
+                    on_change=SettingsState.set_identity_preset,
+                    width="100%",
+                ),
+                flex="1",
+            ),
+            rx.vstack(
+                rx.text("Context Window", size="2", weight="medium"),
+                rx.select(
+                    ["8192", "16384", "32768", "65536"],
+                    value=SettingsState.draft_num_ctx.to(str),
+                    on_change=SettingsState.set_num_ctx_from_str,
+                    width="100%",
+                ),
+                flex="1",
+            ),
             width="100%",
+            spacing="3",
         ),
         rx.hstack(
             rx.switch(
@@ -236,6 +321,19 @@ def _llm_tab() -> rx.Component:
             on_change=SettingsState.set_draft_system_prompt,
             width="100%",
             height="150px",
+        ),
+        # Inner Deliberation Committee
+        rx.divider(),
+        rx.heading("Inner Deliberation Committee", size="3"),
+        rx.text(
+            "Select personas to debate the answer before 'The Self' responds.",
+            size="1",
+            color="#94a3b8",
+        ),
+        rx.vstack(
+            *[_persona_checkbox(p) for p in _PERSONA_OPTIONS],
+            spacing="2",
+            width="100%",
         ),
         rx.text("Deliberation Rounds", size="2", weight="medium"),
         rx.input(
