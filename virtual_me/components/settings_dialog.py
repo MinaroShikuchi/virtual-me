@@ -3,7 +3,14 @@ virtual_me/components/settings_dialog.py — Settings dialog (centered modal).
 """
 import reflex as rx
 from virtual_me.state.app_state import AppState
-from config import EMBEDDING_MODELS
+from config import (
+    EMBEDDING_MODELS,
+    DEFAULT_MODEL, DEFAULT_INTENT_MODEL, DEFAULT_OLLAMA, DEFAULT_CTX,
+    DEFAULT_SYSTEM_PROMPT, DEFAULT_DELIBERATION_ROUNDS,
+    DEFAULT_ACTIVE_PERSONAS, DEFAULT_ENABLE_THINKING,
+    EMBEDDING_MODEL,
+    NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
+)
 
 
 class SettingsState(rx.State):
@@ -13,17 +20,17 @@ class SettingsState(rx.State):
     active_tab: str = "llm"
 
     # Draft LLM
-    draft_ollama_host: str = ""
-    draft_model: str = ""
-    draft_intent_model: str = ""
-    draft_num_ctx: int = 32768
-    draft_system_prompt: str = ""
-    draft_enable_thinking: bool = True
-    draft_deliberation_rounds: int = 2
-    draft_active_personas: list[str] = []
+    draft_ollama_host: str = DEFAULT_OLLAMA
+    draft_model: str = DEFAULT_MODEL
+    draft_intent_model: str = DEFAULT_INTENT_MODEL
+    draft_num_ctx: int = DEFAULT_CTX
+    draft_system_prompt: str = DEFAULT_SYSTEM_PROMPT
+    draft_enable_thinking: bool = DEFAULT_ENABLE_THINKING
+    draft_deliberation_rounds: int = DEFAULT_DELIBERATION_ROUNDS
+    draft_active_personas: list[str] = DEFAULT_ACTIVE_PERSONAS
 
     # Draft Embedding
-    draft_embedding_model: str = ""
+    draft_embedding_model: str = EMBEDDING_MODEL
 
     # Draft RAG
     draft_n_results: int = 30
@@ -32,9 +39,9 @@ class SettingsState(rx.State):
     draft_hybrid: bool = True
 
     # Draft Neo4j
-    draft_neo4j_uri: str = ""
-    draft_neo4j_user: str = ""
-    draft_neo4j_password: str = ""
+    draft_neo4j_uri: str = NEO4J_URI
+    draft_neo4j_user: str = NEO4J_USER
+    draft_neo4j_password: str = NEO4J_PASSWORD
 
     # Available Ollama models (fetched on open)
     available_models: list[str] = []
