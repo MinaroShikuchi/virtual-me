@@ -162,6 +162,21 @@ def _message_bubble(msg: ChatMessage) -> rx.Component:
     )
 
 
+def _info_badge(icon_name: str, label: str, value: rx.Var[str]) -> rx.Component:
+    """Small info badge with icon, label, and value."""
+    return rx.hstack(
+        rx.icon(icon_name, size=12, color="#64748b"),
+        rx.text(label, size="1", color="#64748b"),
+        rx.text(value, size="1", color="#e2e8f0", weight="medium"),
+        spacing="1",
+        align="center",
+        bg="#1e2030",
+        padding="4px 10px",
+        border_radius="6px",
+        border="1px solid #2d3250",
+    )
+
+
 def chat_content() -> rx.Component:
     return rx.vstack(
         # Header
@@ -178,16 +193,31 @@ def chat_content() -> rx.Component:
             align="center",
         ),
 
-        # Committee status
-        rx.cond(
-            ChatState.active_personas.length() > 0,
-            rx.hstack(
-                rx.text("Committee Active: ", size="1", color="#94a3b8"),
-                rx.text(ChatState.deliberation_rounds.to(str), size="1", color="#94a3b8"),
-                rx.text(" rounds", size="1", color="#94a3b8"),
-                spacing="0",
+        # Info bar: model, context, committee, rounds
+        rx.hstack(
+            _info_badge("bot", "Model:", ChatState.model),
+            _info_badge("cpu", "Context:", ChatState.num_ctx.to(str)),
+            rx.cond(
+                ChatState.active_personas.length() > 0,
+                _info_badge(
+                    "users",
+                    "Committee:",
+                    ChatState.active_personas.join(", "),
+                ),
+                rx.fragment(),
             ),
-            rx.fragment(),
+            rx.cond(
+                ChatState.active_personas.length() > 0,
+                _info_badge(
+                    "repeat",
+                    "Rounds:",
+                    ChatState.deliberation_rounds.to(str),
+                ),
+                rx.fragment(),
+            ),
+            spacing="2",
+            width="100%",
+            flex_wrap="wrap",
         ),
 
         # Messages
