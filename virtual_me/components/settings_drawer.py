@@ -119,6 +119,61 @@ class SettingsState(rx.State):
         if val:
             self.draft_top_k = int(val[0])
 
+    @rx.event
+    def set_draft_ollama_host(self, value: str):
+        """Set draft Ollama host."""
+        self.draft_ollama_host = value
+
+    @rx.event
+    def set_draft_model(self, value: str):
+        """Set draft model."""
+        self.draft_model = value
+
+    @rx.event
+    def set_draft_intent_model(self, value: str):
+        """Set draft intent model."""
+        self.draft_intent_model = value
+
+    @rx.event
+    def set_draft_enable_thinking(self, value: bool):
+        """Set draft enable thinking."""
+        self.draft_enable_thinking = value
+
+    @rx.event
+    def set_draft_system_prompt(self, value: str):
+        """Set draft system prompt."""
+        self.draft_system_prompt = value
+
+    @rx.event
+    def set_draft_embedding_model(self, value: str):
+        """Set draft embedding model."""
+        self.draft_embedding_model = value
+
+    @rx.event
+    def set_draft_do_rerank(self, value: bool):
+        """Set draft do rerank."""
+        self.draft_do_rerank = value
+
+    @rx.event
+    def set_draft_hybrid(self, value: bool):
+        """Set draft hybrid search."""
+        self.draft_hybrid = value
+
+    @rx.event
+    def set_draft_neo4j_uri(self, value: str):
+        """Set draft Neo4j URI."""
+        self.draft_neo4j_uri = value
+
+    @rx.event
+    def set_draft_neo4j_user(self, value: str):
+        """Set draft Neo4j user."""
+        self.draft_neo4j_user = value
+
+    @rx.event
+    def set_draft_neo4j_password(self, value: str):
+        """Set draft Neo4j password."""
+        self.draft_neo4j_password = value
+
     def handle_drawer_open_change(self, is_open: bool):
         """Handle drawer open/close state changes."""
         app = self.get_state(AppState)

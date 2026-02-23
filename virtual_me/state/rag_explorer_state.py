@@ -31,6 +31,21 @@ class RAGExplorerState(AppState):
     is_searching: bool = False
     error_message: str = ""
 
+    @rx.event
+    def set_query(self, value: str):
+        """Set the search query."""
+        self.query = value
+
+    @rx.event
+    def set_selected_friend(self, value: str):
+        """Set the selected friend filter."""
+        self.selected_friend = value
+
+    @rx.event
+    def set_source_filter(self, value: str):
+        """Set the source filter."""
+        self.source_filter = value
+
     def load_friends(self):
         """Load friend names for the filter dropdown."""
         try:

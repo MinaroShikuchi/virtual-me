@@ -16,6 +16,16 @@ class EntityBrowserState(AppState):
     is_searching: bool = False
     error_message: str = ""
 
+    @rx.event
+    def set_selected_label(self, value: str):
+        """Set the selected node label."""
+        self.selected_label = value
+
+    @rx.event
+    def set_search_query(self, value: str):
+        """Set the search query."""
+        self.search_query = value
+
     def search_nodes(self):
         """Search Neo4j for nodes matching the query."""
         if not self.search_query:

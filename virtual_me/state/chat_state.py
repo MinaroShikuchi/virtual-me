@@ -29,6 +29,11 @@ class ChatState(AppState):
     loading_status: str = ""
     error_message: str = ""
 
+    @rx.event
+    def set_current_input(self, value: str):
+        """Set the current input value."""
+        self.current_input = value
+
     def clear_history(self):
         """Clear all chat messages."""
         self.messages = []
