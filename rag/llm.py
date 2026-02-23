@@ -1,8 +1,13 @@
 """
 rag/llm.py — Ollama LLM call with thinking-token support.
 """
+import json
+import logging
+
 import ollama
 from config import IDENTITIES
+
+log = logging.getLogger(__name__)
 
 def _build_context_string(docs: list, episodes: list, facts: list) -> str:
     ctx = ""
@@ -58,7 +63,6 @@ def _parse_llm_response(resp: dict):
     comp_tok   = resp.get("eval_count", 0)
     return thinking, answer, prompt_tok, comp_tok
 
-import json
 def filter_irrelevant_context(question: str, docs: list, model: str, ollama_host: str) -> list:
     """
     Passes each retrieved conversation chunk through a lightweight LLM to determine
@@ -71,7 +75,7 @@ def filter_irrelevant_context(question: str, docs: list, model: str, ollama_host
     client = ollama.Client(host=ollama_host)
     filtered_docs = []
     
-    print(f"\n{'='*50}\n[DEBUG: CONTEXT PURIFICATION ({model})]\n{'='*50}")
+    log.debug("Context purification (%s): %d docs to filter", model, len(docs))
     
     for i, doc in enumerate(docs):
         prompt = f"""
@@ -91,7 +95,7 @@ Return ONLY valid JSON matching this schema:
 """.strip()
 
         try:
-            print(f"\n[Doc {i+1} PROMPT]:\n{prompt}\n")
+            log.debug("Doc %d purification prompt:\n%s", i + 1, prompt)
             res = client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
@@ -101,18 +105,19 @@ Return ONLY valid JSON matching this schema:
             content = res["message"]["content"]
             result = json.loads(content)
             
-            print(f"[Doc {i+1} OUTPUT]:\n{json.dumps(result, indent=2)}\n")
-            
             is_relevant = result.get("is_relevant", True)
-            print(f"Doc {i+1} relevant: {is_relevant}")
+            log.debug("Doc %d relevant: %s", i + 1, is_relevant)
             
             if is_relevant:
                 filtered_docs.append(doc)
         except Exception as e:
-            print(f"Context purification failed for doc {i+1}, keeping it by default: {e}")
+            log.warning("Context purification failed for doc %d, keeping: %s", i + 1, e)
             filtered_docs.append(doc)
-            
-    print(f"Purification completed: kept {len(filtered_docs)} out of {len(docs)} docs\n{'='*50}\n")
+
+    log.info(
+        "[3/5 PURIFY] kept %d / %d docs (removed %d irrelevant)",
+        len(filtered_docs), len(docs), len(docs) - len(filtered_docs),
+    )
     return filtered_docs
 
 def call_llm(question: str, docs: list, episodes: list, facts: list,
@@ -151,7 +156,7 @@ def call_llm(question: str, docs: list, episodes: list, facts: list,
 def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: list,
                               model: str, ollama_host: str, num_ctx: int,
                               active_personas: list, deliberation_rounds: int, enable_thinking: bool = True,
-                              update_callback=None, tool_executor=None):
+                              update_callback=None, tool_executor=None, cancel_check=None):
     """
     Returns (thinking, answer, prompt_tokens, completion_tokens, deliberations).
 
@@ -166,6 +171,9 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
     if tool_executor is not None:
         from rag.agent import run_committee
 
+        # Build initial context from upfront naive retrieval
+        initial_context = _build_context_string(docs, episodes, facts)
+
         return run_committee(
             question=question,
             active_personas=active_personas,
@@ -176,6 +184,8 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
             deliberation_rounds=deliberation_rounds,
             enable_thinking=enable_thinking,
             update_callback=update_callback,
+            initial_context=initial_context,
+            cancel_check=cancel_check,
         )
 
     # ── Legacy path: static context (fallback) ─────────────────────────
@@ -223,9 +233,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 "options": {"num_ctx": num_ctx},
             }
 
-            print(f"\n{'='*50}\n[DEBUG: INPUT TO {persona.upper()} (ROUND {r})]\n{'='*50}")
-            print(f"SYSTEM PROMPT:\n{full_system_prompt}")
-            print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n")
+            log.debug("Legacy deliberation: %s round %d", persona, r)
 
             if enable_thinking:
                 chat_kwargs["think"] = True
@@ -281,9 +289,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         "options": {"num_ctx": num_ctx},
     }
 
-    print(f"\n{'='*50}\n[DEBUG: INPUT TO THE SELF (FINAL SYNTHESIS)]\n{'='*50}")
-    print(f"SYSTEM PROMPT:\n{full_system_prompt}")
-    print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n")
+    log.debug("Legacy synthesis: The Self")
 
     if enable_thinking:
         chat_kwargs["think"] = True

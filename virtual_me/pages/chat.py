@@ -264,14 +264,24 @@ def chat_content() -> rx.Component:
             padding="8px",
         ),
 
-        # Loading indicator
+        # Loading indicator + stop button
         rx.cond(
             ChatState.is_loading,
             rx.hstack(
                 rx.spinner(size="2"),
                 rx.text(ChatState.loading_status, size="2", color="#94a3b8"),
+                rx.spacer(),
+                rx.button(
+                    rx.icon("square", size=14),
+                    "Stop",
+                    variant="outline",
+                    color_scheme="red",
+                    size="1",
+                    on_click=ChatState.cancel_generation,
+                ),
                 spacing="2",
                 align="center",
+                width="100%",
             ),
             rx.fragment(),
         ),
@@ -287,23 +297,29 @@ def chat_content() -> rx.Component:
             rx.fragment(),
         ),
 
-        # Input
-        rx.hstack(
-            rx.input(
-                placeholder="Ask anything about your memories…",
-                value=ChatState.current_input,
-                on_change=ChatState.set_current_input,
+        # Input (form enables Enter-to-submit)
+        rx.form(
+            rx.hstack(
+                rx.input(
+                    placeholder="Ask anything about your memories…",
+                    value=ChatState.current_input,
+                    on_change=ChatState.set_current_input,
+                    name="message",
+                    width="100%",
+                    size="3",
+                ),
+                rx.button(
+                    rx.icon("send", size=18),
+                    type="submit",
+                    loading=ChatState.is_loading,
+                    color_scheme="iris",
+                    size="3",
+                ),
+                spacing="2",
                 width="100%",
-                size="3",
             ),
-            rx.button(
-                rx.icon("send", size=18),
-                on_click=ChatState.send_message,
-                loading=ChatState.is_loading,
-                color_scheme="iris",
-                size="3",
-            ),
-            spacing="2",
+            on_submit=lambda _: ChatState.send_message(),
+            reset_on_submit=False,
             width="100%",
         ),
 

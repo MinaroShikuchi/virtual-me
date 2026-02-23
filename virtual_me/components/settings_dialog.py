@@ -93,7 +93,6 @@ class SettingsState(rx.State):
             self.available_models = sorted(
                 [getattr(m, "model", None) or m.get("model", "") for m in (models_list or [])]
             )
-            print(f"[settings] Fetched {len(self.available_models)} models: {self.available_models}")
         except Exception as exc:
             print(f"[settings] Failed to fetch models: {exc}")
             self.available_models = []

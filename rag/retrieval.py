@@ -7,20 +7,20 @@ Pipeline for a semantic query:
   2.  Reciprocal Rank Fusion  → merged, deduplicated ranked list   (if hybrid=True)
   3.  Cross-encoder rerank    → keep top_k by relevance score      (if do_rerank=True)
 """
+import json
+import logging
 import re
 
+import ollama
 from rank_bm25 import BM25Okapi
 
 from services.bm25_service import get_bm25_corpus
 from services.reranker_service import get_reranker
 
+log = logging.getLogger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 RRF_K = 60   # standard constant; higher = dampens top-rank advantage
-
-
-import json
-import ollama
 
 # ── Intent Router ─────────────────────────────────────────────────────────────
 def analyze_intent(question: str, model: str, host: str, name_to_id: dict) -> dict:
@@ -53,8 +53,7 @@ Return ONLY the JSON. No markdown formatting.
     """.strip()
     
     try:
-        print(f"\n{'='*50}\n[DEBUG: INPUT TO INTENT ROUTER ({model})]\n{'='*50}")
-        print(f"PROMPT:\n{prompt}\n{'='*50}\n")
+        log.debug("Intent router (%s) prompt:\n%s", model, prompt)
         
         client = ollama.Client(host=host)
         res = client.chat(
@@ -66,14 +65,20 @@ Return ONLY the JSON. No markdown formatting.
         content = res["message"]["content"]
         intent = json.loads(content)
         
-        # Capitalize extracted names for graph lookups 
+        # Capitalize extracted names for graph lookups
         intent["people"] = [p.title() for p in intent.get("people", [])]
         
-        print(f"[DEBUG: INTENT OUTPUT]\n{json.dumps(intent, indent=2)}\n{'='*50}\n")
+        log.info(
+            "[1/5 INTENT] people=%s  locations=%s  time=%s  type=%s",
+            intent.get("people", []),
+            intent.get("locations", []),
+            intent.get("time_periods", []),
+            intent.get("query_type", "?"),
+        )
         return intent
 
     except Exception as e:
-        print(f"Intent analysis failed: {e}")
+        log.warning("Intent analysis failed: %s", e)
         return {"people": [], "locations": [], "time_periods": [], "query_type": "exploratory"}
 
 
@@ -309,6 +314,6 @@ def retrieve(question: str, n_results: int,
             docs = top_bm25
 
     except Exception as e:
-        print(f"Retrieval error: {e}")
+        log.warning("Retrieval error: %s", e)
 
     return docs, episodes, intent

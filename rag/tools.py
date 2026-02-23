@@ -4,6 +4,9 @@ rag/tools.py — Memory tools for persona agents.
 Defines tool schemas (JSON Schema for Ollama's native tool-calling API)
 and a ToolExecutor class that wraps existing retrieval pipelines.
 """
+import logging
+
+log = logging.getLogger(__name__)
 
 # ── Tool JSON Schemas (Ollama format) ──────────────────────────────────
 
@@ -124,6 +127,7 @@ class ToolExecutor:
             do_rerank=self.do_rerank,
             hybrid=self.hybrid,
         )
+        log.info("    → search_memories returned %d docs, %d episodes", len(docs), len(episodes))
 
         parts: list[str] = []
         if docs:
@@ -143,6 +147,7 @@ class ToolExecutor:
 
         intent = {"people": people, "locations": locations}
         facts = retrieve_facts(intent)
+        log.info("    → search_knowledge_graph returned %d facts", len(facts))
         if facts:
             return (
                 "=== KNOWLEDGE GRAPH FACTS ===\n"

@@ -15,7 +15,7 @@ DATA_DIR = Path("./data")
 
 # ── Ollama defaults ───────────────────────────
 DEFAULT_MODEL  = "qwen2.5:7b"
-DEFAULT_INTENT_MODEL = "llama3.2:3b"
+DEFAULT_INTENT_MODEL = "qwen2.5:7b"
 DEFAULT_OLLAMA = "http://localhost:11434"
 DEFAULT_CTX    = 32768
 DEFAULT_DELIBERATION_ROUNDS = 2

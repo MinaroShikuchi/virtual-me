@@ -7,9 +7,13 @@ into a final answer.
 """
 from __future__ import annotations
 
+import logging
+
 import ollama
 from config import IDENTITIES
 from rag.tools import TOOL_SCHEMAS, ToolExecutor
+
+log = logging.getLogger(__name__)
 
 MAX_TOOL_ITERATIONS = 3  # Per-persona cap on tool-calling rounds
 
@@ -27,12 +31,20 @@ def _run_persona_agent(
     previous_deliberations: list[dict],
     enable_thinking: bool = True,
     max_iterations: int = MAX_TOOL_ITERATIONS,
+    initial_context: str = "",
 ) -> dict:
     """Run a single persona as a tool-calling agent.
 
     The agent receives the user question plus tool definitions.  It may
     call tools zero or more times (up to *max_iterations*) before
     producing its final textual response.
+
+    Parameters
+    ----------
+    initial_context : str
+        Pre-retrieved context from upfront naive retrieval.  Injected
+        into the system prompt so the persona has baseline knowledge
+        before deciding whether to call additional tools.
 
     Returns
     -------
@@ -49,23 +61,43 @@ def _run_persona_agent(
         for d in previous_deliberations:
             delib_ctx += f"[{d['persona']}]: {d['response']}\n\n"
 
+    # Build baseline context block from upfront retrieval
+    baseline_ctx = ""
+    if initial_context:
+        baseline_ctx = (
+            "\n\n=== BASELINE CONTEXT (from initial retrieval) ===\n"
+            f"{initial_context}\n"
+        )
+
     system_prompt = (
         f"{persona_prompt}\n\n"
         "You are participating in an inner committee deliberation. "
         "You have access to memory tools — use them if you need to recall "
         "specific facts, conversations, or experiences to inform your perspective. "
-        "If the question is emotional or philosophical, you may respond directly "
-        "without searching.\n\n"
+        "Some baseline context has already been retrieved for you below. "
+        "Use your tools only if you need MORE specific or targeted information "
+        "beyond what is already provided.\n\n"
         "RELATIONSHIP INTERPRETATION GUIDE:\n"
         "- 'WAS' or '(PAST relationship)' = HISTORICAL, no longer true\n"
         "- 'IS' or '(CURRENT relationship)' = TRUE RIGHT NOW\n"
-        f"{delib_ctx}"
+        f"{baseline_ctx}{delib_ctx}"
     )
 
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": question},
     ]
+
+    # Log what's being passed to this agent
+    tool_names = [t["function"]["name"] for t in TOOL_SCHEMAS]
+    log.info(
+        "  ├─ system prompt: %d chars  |  baseline context: %d chars  |  "
+        "prev deliberations: %d  |  tools: %s",
+        len(system_prompt),
+        len(initial_context),
+        len(previous_deliberations),
+        tool_names,
+    )
 
     tool_trace: list[dict] = []
     total_p_tok = 0
@@ -115,9 +147,7 @@ def _run_persona_agent(
             tool_name = fn["name"]
             tool_args = fn.get("arguments", {})
 
-            print(
-                f"  [TOOL] {persona} calling {tool_name}({tool_args})"
-            )
+            log.info("  [TOOL] %s calling %s(%s)", persona, tool_name, tool_args)
 
             result = tool_executor.execute(tool_name, tool_args)
 
@@ -159,6 +189,10 @@ def _run_persona_agent(
 # ── Committee orchestrator ─────────────────────────────────────────────
 
 
+class CancelledError(Exception):
+    """Raised when the user cancels generation."""
+
+
 def run_committee(
     question: str,
     active_personas: list[str],
@@ -169,6 +203,8 @@ def run_committee(
     deliberation_rounds: int = 1,
     enable_thinking: bool = True,
     update_callback=None,
+    initial_context: str = "",
+    cancel_check=None,
 ) -> tuple:
     """Orchestrate the full committee deliberation.
 
@@ -191,6 +227,12 @@ def run_committee(
         Whether to request thinking tokens from the model.
     update_callback : callable | None
         ``(persona, round, status, response)`` callback for UI updates.
+    initial_context : str
+        Pre-retrieved context from upfront naive retrieval, passed
+        through to each persona agent.
+    cancel_check : callable | None
+        Zero-arg callable returning ``True`` when the user has requested
+        cancellation.  Checked before each persona run.
 
     Returns
     -------
@@ -206,17 +248,16 @@ def run_committee(
 
     for r in range(1, deliberation_rounds + 1):
         for persona in active_personas:
+            if cancel_check and cancel_check():
+                raise CancelledError("Generation cancelled by user.")
+
             if persona not in IDENTITIES:
                 continue
 
             if update_callback:
                 update_callback(persona, r, "working", None)
 
-            print(
-                f"\n{'=' * 50}\n"
-                f"[AGENT] {persona.upper()} — Round {r}\n"
-                f"{'=' * 50}"
-            )
+            log.info("[4/5 AGENT] %s — Round %d", persona.upper(), r)
 
             result = _run_persona_agent(
                 persona=persona,
@@ -227,6 +268,7 @@ def run_committee(
                 tool_executor=tool_executor,
                 previous_deliberations=deliberations,
                 enable_thinking=enable_thinking,
+                initial_context=initial_context,
             )
 
             total_p_tok += result["prompt_tokens"]
@@ -245,14 +287,13 @@ def run_committee(
 
     # ── 2. The Self synthesizes ────────────────────────────────────────
 
+    if cancel_check and cancel_check():
+        raise CancelledError("Generation cancelled by user.")
+
     if update_callback:
         update_callback("The Self", deliberation_rounds + 1, "working", None)
 
-    print(
-        f"\n{'=' * 50}\n"
-        f"[AGENT] THE SELF — Final Synthesis\n"
-        f"{'=' * 50}"
-    )
+    log.info("[5/5 SYNTHESIS] THE SELF — Final Synthesis")
 
     self_result = _run_persona_agent(
         persona="The Self",
@@ -263,6 +304,7 @@ def run_committee(
         tool_executor=tool_executor,
         previous_deliberations=deliberations,
         enable_thinking=enable_thinking,
+        initial_context=initial_context,
     )
 
     total_p_tok += self_result["prompt_tokens"]

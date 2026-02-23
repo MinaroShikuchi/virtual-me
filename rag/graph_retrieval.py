@@ -1,7 +1,11 @@
 """
 rag/graph_retrieval.py — Lookup semantic facts in Neo4j based on LLM intent.
 """
+import logging
+
 from graph.neo4j_client import get_client
+
+log = logging.getLogger(__name__)
 
 def _format_rel_label(rel: str) -> str:
     """Converts SNAKE_CASE relationships like WAS_FRIENDS_WITH into natural language with tense info."""
@@ -67,7 +71,7 @@ def retrieve_facts(intent: dict) -> list[str]:
                             facts.append(factStr)
                             
     except Exception as e:
-        print(f"Failed to retrieve graph facts: {e}")
+        log.warning("Failed to retrieve graph facts: %s", e)
         
     # Deduplicate facts but preserve order
     seen = set()
