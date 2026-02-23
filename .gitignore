@@ -26,6 +26,9 @@ data/*
 facebook_messages.json
 facebook_clean.json
 
+# Environment
+.env
+
 # IDE
 .vscode/
 .idea/

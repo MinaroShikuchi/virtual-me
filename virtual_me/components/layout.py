@@ -50,6 +50,26 @@ def sidebar_nav_link(text: str, href: str, icon: str) -> rx.Component:
     )
 
 
+def sidebar_nav_button(text: str, icon: str, on_click: rx.EventHandler) -> rx.Component:
+    """A sidebar navigation button (same style as nav links, but triggers an action)."""
+    return rx.box(
+        rx.hstack(
+            rx.icon(icon, size=18, color="#e2e8f0"),
+            rx.text(text, size="2", weight="medium", color="#e2e8f0"),
+            spacing="3",
+            align="center",
+            padding_x="12px",
+            padding_y="8px",
+            border_radius="8px",
+            width="100%",
+            _hover={"bg": "rgba(99, 102, 241, 0.1)"},
+            cursor="pointer",
+        ),
+        on_click=on_click,
+        width="100%",
+    )
+
+
 def sidebar() -> rx.Component:
     """Left sidebar with navigation and connection status."""
     return rx.box(
@@ -72,6 +92,7 @@ def sidebar() -> rx.Component:
                 sidebar_nav_link("Node Extract", "/graph", "git-branch"),
                 sidebar_nav_link("RAG Explorer", "/rag", "search"),
                 sidebar_nav_link("Entity Browser", "/browser", "globe"),
+                sidebar_nav_button("Settings", "settings", AppState.open_settings),
                 spacing="1",
                 padding="8px",
                 width="100%",
@@ -110,16 +131,7 @@ def sidebar() -> rx.Component:
                 width="100%",
             ),
 
-            rx.divider(color_scheme="gray"),
 
-            # Settings button
-            rx.button(
-                rx.icon("settings", size=16),
-                "Settings",
-                variant="ghost",
-                width="100%",
-                on_click=AppState.open_settings,
-            ),
 
             spacing="1",
             height="100vh",
