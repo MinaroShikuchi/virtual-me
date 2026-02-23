@@ -93,7 +93,9 @@ class SettingsState(rx.State):
             self.available_models = sorted(
                 [getattr(m, "model", None) or m.get("model", "") for m in (models_list or [])]
             )
-        except Exception:
+            print(f"[settings] Fetched {len(self.available_models)} models: {self.available_models}")
+        except Exception as exc:
+            print(f"[settings] Failed to fetch models: {exc}")
             self.available_models = []
 
     async def save_and_close(self):
@@ -219,8 +221,15 @@ class SettingsState(rx.State):
         self.draft_neo4j_password = value
 
     @rx.event
+    async def open_and_load(self):
+        """Open the settings dialog and load draft values + available models."""
+        app = await self.get_state(AppState)
+        app.open_settings()
+        await self.load_drafts()
+
+    @rx.event
     async def handle_dialog_open_change(self, is_open: bool):
-        """Handle dialog open/close state changes."""
+        """Handle dialog open/close state changes (e.g. user clicks overlay)."""
         app = await self.get_state(AppState)
         if is_open:
             app.open_settings()

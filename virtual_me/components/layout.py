@@ -3,6 +3,7 @@ virtual_me/components/layout.py — Shared layout: sidebar + navbar + content wr
 """
 import reflex as rx
 from virtual_me.state.app_state import AppState
+from virtual_me.components.settings_dialog import SettingsState
 
 
 def status_badge(label: str, connected: rx.Var[bool], detail: rx.Var[str]) -> rx.Component:
@@ -92,7 +93,7 @@ def sidebar() -> rx.Component:
                 sidebar_nav_link("Node Extract", "/graph", "git-branch"),
                 sidebar_nav_link("RAG Explorer", "/rag", "search"),
                 sidebar_nav_link("Entity Browser", "/browser", "globe"),
-                sidebar_nav_button("Settings", "settings", AppState.open_settings),
+                sidebar_nav_button("Settings", "settings", SettingsState.open_and_load),
                 spacing="1",
                 padding="8px",
                 width="100%",
