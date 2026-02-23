@@ -9,10 +9,10 @@ Pipeline for a semantic query:
 """
 import re
 
-import streamlit as st
 from rank_bm25 import BM25Okapi
 
-from rag.resources import load_bm25_corpus, load_reranker
+from services.bm25_service import get_bm25_corpus
+from services.reranker_service import get_reranker
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
@@ -128,7 +128,7 @@ def rerank(query: str, docs: list, top_k: int) -> list:
     if not docs:
         return docs
 
-    reranker = load_reranker()
+    reranker = get_reranker()
     pairs  = [(query, doc["content"]) for doc in docs]
     scores = reranker.predict(pairs)
 
@@ -272,7 +272,7 @@ def retrieve(question: str, n_results: int,
 
         if hybrid:
             # ── Step 1b: BM25 keyword search over full corpus ──
-            bm25, corpus_docs = load_bm25_corpus(collection)
+            bm25, corpus_docs = get_bm25_corpus(collection)
             kw_docs = keyword_search(question, bm25, corpus_docs, n_results, id_to_name)
 
             # Post-filter BM25 results by metadata (BM25 doesn't know about metadata)
@@ -309,6 +309,6 @@ def retrieve(question: str, n_results: int,
             docs = top_bm25
 
     except Exception as e:
-        st.error(f"Retrieval error: {e}")
+        print(f"Retrieval error: {e}")
 
     return docs, episodes, intent

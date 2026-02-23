@@ -1,5 +1,5 @@
 """
-ui/ingest.py — Vector Store tab (episodic memory).
+ui/ingest.py — Vector Store tab (semantic memory).
 
 Sections:
   1. Connection status + collection stats (per-source document counts)
@@ -32,7 +32,7 @@ def _scrollable_log(container, lines: list[str], max_height: int = 300):
 
 def render_vector_tab(collection, episodic=None):
     st.markdown("### :material/database: Vector Store")
-    st.caption("Episodic memory stored in ChromaDB — extract your data exports and embed them as searchable documents.")
+    st.caption("Semantic memory stored in ChromaDB — extract your data exports and embed them as searchable documents.")
 
     # ── Connection banner ──
     try:

@@ -13,7 +13,7 @@ Module layout:
     dashboard.py         — Dashboard page
     chat.py              — Chat page
     rag_explorer.py      — RAG Explorer page
-    ingest.py            — Vector Store page (episodic memory)
+    ingest.py            — Vector Store page (semantic memory)
     graph.py             — Graph page
   pages/
     dashboard.py         — page wrapper for Dashboard
