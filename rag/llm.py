@@ -198,6 +198,10 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
 
     # 1. Deliberation Rounds
     for r in range(1, deliberation_rounds + 1):
+        # Snapshot: all personas in this round see only prior-round deliberations
+        round_snapshot = list(deliberations)
+        round_results: list[dict] = []
+
         for persona in active_personas:
             if persona not in IDENTITIES:
                 continue
@@ -206,15 +210,23 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
 
             # Inject previous deliberations into the context for this persona
             delib_ctx = ""
-            if deliberations:
+            if round_snapshot:
                 delib_ctx = "\n\n=== PREVIOUS DELIBERATIONS FROM OTHER PERSONAS ===\n"
-                for d in deliberations:
+                for d in round_snapshot:
                     delib_ctx += f"[{d['persona']} - Round {d['round']}]: {d['response']}\n\n"
 
             full_system_prompt = (
                 f"{persona_sys_prompt}\n\n"
-                f"You are participating in an inner committee to help answer a question. "
-                f"Provide your perspective based on your psychological identity. Keep your answer focused.\n\n"
+                f"=== CONTEXT: INTERNAL PSYCHOLOGICAL DELIBERATION ===\n"
+                f"You are one of Romain's internal psychological parts, being "
+                f"interrogated by The Self (the balanced, compassionate core of "
+                f"Romain's mind). The Self is asking you to share your perspective "
+                f"on a question about Romain's life, memories, and experiences.\n\n"
+                f"You have access to Romain's personal memory database — conversation "
+                f"logs, episodic memories, and a knowledge graph of people, places, "
+                f"and relationships from Romain's life.\n\n"
+                f"Speak from your unique psychological perspective. Be authentic to "
+                f"your role within Romain's internal system. Keep your answer focused.\n\n"
                 f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
                 f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
                 f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -250,12 +262,15 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
             if update_callback:
                 update_callback(persona, r, "done", answer)
 
-            deliberations.append({
+            round_results.append({
                 "persona": persona,
                 "round": r,
                 "response": answer,
                 "tool_trace": [],
             })
+
+        # Merge this round's results into the full deliberation history
+        deliberations.extend(round_results)
 
     # 2. Final Synthesis by "The Self"
     synthesis_sys_prompt = IDENTITIES.get("The Self", "You are the balanced core Self.")

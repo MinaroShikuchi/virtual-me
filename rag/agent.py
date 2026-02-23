@@ -71,12 +71,20 @@ def _run_persona_agent(
 
     system_prompt = (
         f"{persona_prompt}\n\n"
-        "You are participating in an inner committee deliberation. "
-        "You have access to memory tools — use them if you need to recall "
-        "specific facts, conversations, or experiences to inform your perspective. "
-        "Some baseline context has already been retrieved for you below. "
-        "Use your tools only if you need MORE specific or targeted information "
-        "beyond what is already provided.\n\n"
+        "=== CONTEXT: INTERNAL PSYCHOLOGICAL DELIBERATION ===\n"
+        "You are one of Romain's internal psychological parts, being "
+        "interrogated by The Self (the balanced, compassionate core of "
+        "Romain's mind). The Self is asking you to share your perspective "
+        "on a question about Romain's life, memories, and experiences.\n\n"
+        "You have access to Romain's personal memory database — conversation "
+        "logs, episodic memories, and a knowledge graph of people, places, "
+        "and relationships from Romain's life. Use your tools if you need to "
+        "recall specific facts, conversations, or experiences to inform your "
+        "perspective. Some baseline context has already been retrieved for you "
+        "below. Use your tools only if you need MORE specific or targeted "
+        "information beyond what is already provided.\n\n"
+        "Speak from your unique psychological perspective. Be authentic to "
+        "your role within Romain's internal system.\n\n"
         "RELATIONSHIP INTERPRETATION GUIDE:\n"
         "- 'WAS' or '(PAST relationship)' = HISTORICAL, no longer true\n"
         "- 'IS' or '(CURRENT relationship)' = TRUE RIGHT NOW\n"
@@ -247,6 +255,10 @@ def run_committee(
     # ── 1. Run each persona agent ──────────────────────────────────────
 
     for r in range(1, deliberation_rounds + 1):
+        # Snapshot: all personas in this round see only prior-round deliberations
+        round_snapshot = list(deliberations)
+        round_results: list[dict] = []
+
         for persona in active_personas:
             if cancel_check and cancel_check():
                 raise CancelledError("Generation cancelled by user.")
@@ -266,7 +278,7 @@ def run_committee(
                 model=model,
                 num_ctx=num_ctx,
                 tool_executor=tool_executor,
-                previous_deliberations=deliberations,
+                previous_deliberations=round_snapshot,
                 enable_thinking=enable_thinking,
                 initial_context=initial_context,
             )
@@ -280,10 +292,13 @@ def run_committee(
                 "response": result["response"],
                 "tool_trace": result["tool_trace"],
             }
-            deliberations.append(delib_entry)
+            round_results.append(delib_entry)
 
             if update_callback:
                 update_callback(persona, r, "done", result["response"])
+
+        # Merge this round's results into the full deliberation history
+        deliberations.extend(round_results)
 
     # ── 2. The Self synthesizes ────────────────────────────────────────
 
