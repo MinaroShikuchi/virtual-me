@@ -11,13 +11,12 @@ def _token_bar(msg: ChatMessage) -> rx.Component:
     return rx.cond(
         msg.prompt_tokens > 0,
         rx.vstack(
-            rx.text(
-                "prompt: "
-                + msg.prompt_tokens.to(str)
-                + " | response: "
-                + msg.completion_tokens.to(str),
-                size="1",
-                color="#64748b",
+            rx.hstack(
+                rx.text("prompt: ", size="1", color="#64748b"),
+                rx.text(msg.prompt_tokens.to(str), size="1", color="#64748b"),
+                rx.text(" | response: ", size="1", color="#64748b"),
+                rx.text(msg.completion_tokens.to(str), size="1", color="#64748b"),
+                spacing="0",
             ),
             spacing="1",
             width="100%",
@@ -62,16 +61,20 @@ def _intent_block(msg: ChatMessage) -> rx.Component:
         msg.facts.length() > 0,
         rx.accordion.root(
             rx.accordion.item(
-                header=rx.text(
-                    "Intent & Facts ("
-                    + msg.facts.length().to(str)
-                    + " found)",
-                    size="2",
+                header=rx.hstack(
+                    rx.text("Intent & Facts (", size="2"),
+                    rx.text(msg.facts.length().to(str), size="2"),
+                    rx.text(" found)", size="2"),
+                    spacing="0",
                 ),
                 content=rx.vstack(
                     rx.foreach(
                         msg.facts,
-                        lambda f: rx.text("• " + f, size="2", color="#e2e8f0"),
+                        lambda f: rx.hstack(
+                            rx.text("• ", size="2", color="#e2e8f0"),
+                            rx.text(f, size="2", color="#e2e8f0"),
+                            spacing="0",
+                        ),
                     ),
                     spacing="1",
                 ),
@@ -88,10 +91,12 @@ def _deliberation_item(d: dict) -> rx.Component:
     """Render a single deliberation entry."""
     return rx.box(
         rx.vstack(
-            rx.text(
-                d["persona"] + " (Round " + d["round"].to(str) + ")",
-                weight="bold",
-                size="2",
+            rx.hstack(
+                rx.text(d["persona"], weight="bold", size="2"),
+                rx.text(" (Round ", weight="bold", size="2"),
+                rx.text(d["round"].to(str), weight="bold", size="2"),
+                rx.text(")", weight="bold", size="2"),
+                spacing="0",
             ),
             rx.text(d["response"], size="2", color="#94a3b8"),
             spacing="1",
@@ -176,12 +181,11 @@ def chat_content() -> rx.Component:
         # Committee status
         rx.cond(
             ChatState.active_personas.length() > 0,
-            rx.text(
-                "Committee Active: "
-                + ChatState.deliberation_rounds.to(str)
-                + " rounds",
-                size="1",
-                color="#94a3b8",
+            rx.hstack(
+                rx.text("Committee Active: ", size="1", color="#94a3b8"),
+                rx.text(ChatState.deliberation_rounds.to(str), size="1", color="#94a3b8"),
+                rx.text(" rounds", size="1", color="#94a3b8"),
+                spacing="0",
             ),
             rx.fragment(),
         ),
