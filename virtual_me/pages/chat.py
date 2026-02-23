@@ -91,9 +91,9 @@ def _tool_trace_badge(t: dict) -> rx.Component:
     """Render a single tool-call trace as a compact badge."""
     return rx.hstack(
         rx.icon("wrench", size=12, color="#60a5fa"),
-        rx.text(t["tool"], size="1", weight="bold", color="#60a5fa"),
+        rx.text(t["tool"].to(str), size="1", weight="bold", color="#60a5fa"),
         rx.text(
-            t["result_preview"],
+            t["result_preview"].to(str),
             size="1",
             color="#64748b",
             max_width="400px",
@@ -122,9 +122,9 @@ def _deliberation_item(d: dict) -> rx.Component:
             ),
             # Tool traces (shown when tool_trace list is non-empty)
             rx.cond(
-                d["tool_trace"].length() > 0,
+                d["tool_trace"].to(list[dict]).length() > 0,
                 rx.vstack(
-                    rx.foreach(d["tool_trace"], _tool_trace_badge),
+                    rx.foreach(d["tool_trace"].to(list[dict]), _tool_trace_badge),
                     spacing="1",
                 ),
                 rx.fragment(),
