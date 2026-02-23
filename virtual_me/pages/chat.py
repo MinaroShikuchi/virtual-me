@@ -220,7 +220,7 @@ def chat_content() -> rx.Component:
             ChatState.error_message != "",
             rx.callout(
                 ChatState.error_message,
-                icon="alert_circle",
+                icon="circle-alert",
                 color_scheme="red",
             ),
             rx.fragment(),

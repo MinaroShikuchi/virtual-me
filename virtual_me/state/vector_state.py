@@ -116,7 +116,7 @@ class VectorState(AppState):
         except ValueError:
             pass
 
-    def set_session_gap(self, val: list[int]):
+    def set_session_gap(self, val: list[float]):
         """Set the session gap in hours (from slider on_value_commit)."""
         if val:
             self.session_gap_h = val[0]
