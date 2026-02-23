@@ -3,11 +3,11 @@ ui/rag_explorer.py — RAG Explorer tab: inspect retrieved documents without cal
 """
 import streamlit as st
 
-from rag.retrieval import retrieve, detect_smart_filter, build_where
+from rag.retrieval import retrieve, analyze_intent, build_where
 
 
 def render_rag_tab(collection, episodic, id_to_name, name_to_id,
-                   n_results, top_k, do_rerank, hybrid):
+                   n_results, top_k, do_rerank, hybrid, model, intent_model, ollama_host):
     st.markdown("### :material/search: RAG Explorer")
     st.caption("Query ChromaDB directly to inspect retrieved documents — **no LLM call**. "
                "All filters are passed directly as ChromaDB metadata `where` clauses.")
@@ -53,7 +53,16 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
             strategy    = "Strict (Conversation)"
             friend_name = selected_friend
     else:
-        base_filter, friend_name, strategy = detect_smart_filter(query, name_to_id)
+        intent = analyze_intent(query, intent_model, ollama_host, name_to_id)
+        if intent.get("people"):
+            # Same logic as Chat tab
+            for p in intent["people"]:
+                matched_id = name_to_id.get(p.lower())
+                if matched_id:
+                    base_filter = {"conversation": matched_id}
+                    strategy = "Strict (Conversation)"
+                    friend_name = p
+                    break
 
     # ── Build extra metadata filters ──
     metadata_filters: dict = {}
@@ -72,9 +81,10 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
         st.json(final_where if final_where else {"note": "no filter — full collection search"})
 
     with st.spinner("Querying ChromaDB…"):
-        docs, episodes = retrieve(
-            query, n_results, base_filter, strategy,
-            collection, episodic, id_to_name,
+        docs, episodes, intent = retrieve(
+            query, n_results,
+            collection, episodic, id_to_name, name_to_id,
+            intent_model, ollama_host,
             metadata_filters=metadata_filters,
             top_k=top_k,
             do_rerank=do_rerank,

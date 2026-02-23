@@ -19,45 +19,63 @@ from rag.resources import load_bm25_corpus, load_reranker
 RRF_K = 60   # standard constant; higher = dampens top-rank advantage
 
 
-# ── Smart filter detection ────────────────────────────────────────────────────
-def detect_smart_filter(question: str, name_to_id: dict):
+import json
+import ollama
+
+# ── Intent Router ─────────────────────────────────────────────────────────────
+def analyze_intent(question: str, model: str, host: str, name_to_id: dict) -> dict:
     """
-    Parses the user question for a friend name and returns
-    (base_filter, matched_name, strategy).
-
-    Strategy values: "Strict (Conversation)" | "Global (Mention)" | "None"
+    Pre-flight LLM call to structure the user's intent.
+    Extracts relevant people, locations, and timeframes.
+    Output is strictly JSON:
+      {
+        "people": ["Gabija"],
+        "locations": ["Vilnius", "Paris"],
+        "time_periods": ["2025", "last summer"],
+        "query_type": "factual" | "emotional" | "exploratory"
+      }
     """
-    q  = question.lower()
-    qn = q.replace(" ", "")
+    prompt = f"""
+You are an intent router for a personal history database.
+Perform semantic analysis on the user query and extract exactly the people, places, and timeframes mentioned.
 
-    matched_name, matched_id = None, None
+Only output valid JSON matching this schema:
+{{
+  "people": [list of person names extracted from the query],
+  "locations": [list of places/locations extracted],
+  "time_periods": [list of dates/years/time expressions],
+  "query_type": "factual" | "emotional" | "exploratory"
+}}
 
-    # Exact match
-    for name, cid in name_to_id.items():
-        if name in q:
-            matched_name, matched_id = name, cid
-            break
+User query: {question}
 
-    # Partial / normalised match
-    if not matched_name:
-        for name, cid in name_to_id.items():
-            nn = name.replace(" ", "")
-            if len(nn) >= 3 and nn in qn:
-                matched_name, matched_id = name, cid
-                break
-            for part in name.split():
-                if len(part) >= 3 and part in q:
-                    matched_name, matched_id = name, cid
-                    break
-            if matched_name:
-                break
+Return ONLY the JSON. No markdown formatting.
+    """.strip()
+    
+    try:
+        print(f"\n{'='*50}\n[DEBUG: INPUT TO INTENT ROUTER ({model})]\n{'='*50}")
+        print(f"PROMPT:\n{prompt}\n{'='*50}\n")
+        
+        client = ollama.Client(host=host)
+        res = client.chat(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            format="json", # Ensure valid json
+            options={"temperature": 0.0}
+        )
+        content = res["message"]["content"]
+        intent = json.loads(content)
+        
+        # Capitalize extracted names for graph lookups 
+        intent["people"] = [p.title() for p in intent.get("people", [])]
+        
+        print(f"[DEBUG: INTENT OUTPUT]\n{json.dumps(intent, indent=2)}\n{'='*50}\n")
+        return intent
 
-    if matched_name and matched_id:
-        if re.search(rf"\b(about|mentioning)\s+{re.escape(matched_name)}\b", q):
-            return None, matched_name, "Global (Mention)"
-        return {"conversation": matched_id}, matched_name, "Strict (Conversation)"
+    except Exception as e:
+        print(f"Intent analysis failed: {e}")
+        return {"people": [], "locations": [], "time_periods": [], "query_type": "exploratory"}
 
-    return None, None, "None"
 
 
 # ── Metadata filter builder ───────────────────────────────────────────────────
@@ -173,14 +191,16 @@ def rrf_merge(semantic_docs: list, keyword_docs: list) -> list:
 
 
 # ── Main retrieval pipeline ───────────────────────────────────────────────────
-def retrieve(question: str, n_results: int, base_filter, strategy: str,
-             collection, episodic, id_to_name: dict,
+def retrieve(question: str, n_results: int,
+             collection, episodic, id_to_name: dict, name_to_id: dict,
+             model: str, ollama_host: str,
              metadata_filters: dict | None = None,
              top_k: int = 10,
              do_rerank: bool = True,
              hybrid: bool = True):
     """
-    Returns (docs_list, episodes_list).
+    Returns (docs_list, episodes_list, intent_dict).
+
 
     Full pipeline for semantic queries:
       1a. ChromaDB vector search  → top n_results semantic candidates
@@ -193,6 +213,22 @@ def retrieve(question: str, n_results: int, base_filter, strategy: str,
     docs, episodes = [], []
     if metadata_filters is None:
         metadata_filters = {}
+
+    intent = analyze_intent(question, model, ollama_host, name_to_id)
+    strategy = "Exploratory"
+    base_filter = None
+    friend_name = None
+
+    if intent.get("people"):
+        # We just pick the first person identified to build a strict conversation filter if it exists
+        # Alternatively we could do a global mention, let's keep it simple and filter by the first known friend
+        for p in intent["people"]:
+            matched_id = name_to_id.get(p.lower())
+            if matched_id:
+                base_filter = {"conversation": matched_id}
+                strategy = "Strict (Conversation)"
+                friend_name = p
+                break
 
     where = build_where(base_filter, metadata_filters)
 
@@ -210,14 +246,17 @@ def retrieve(question: str, n_results: int, base_filter, strategy: str,
 
     # Main memory
     try:
-        if strategy == "Strict (Conversation)" and base_filter and not metadata_filters:
-            # Load entire conversation chronologically — skip search pipeline
-            raw = collection.get(where=where, include=["metadatas", "documents"])
-            pairs = list(zip(raw["documents"], raw["metadatas"]))
-            pairs.sort(key=lambda x: x[1].get("date", ""))
-            for d, m in pairs:
+        # ── Step 1a: Semantic (vector) search ──
+        semantic_docs = []
+        raw = collection.query(
+            query_texts=[question],
+            n_results=n_results,
+            where=where,
+        )
+        if raw["documents"] and raw["documents"][0]:
+            for d, m in zip(raw["documents"][0], raw["metadatas"][0]):
                 conv_id = m.get("conversation", "")
-                docs.append({
+                semantic_docs.append({
                     "date":            m.get("date", ""),
                     "conversation_id": conv_id,
                     "friend":          id_to_name.get(conv_id, conv_id),
@@ -227,64 +266,49 @@ def retrieve(question: str, n_results: int, base_filter, strategy: str,
                     "rrf_score":       None,
                     "semantic_rank":   None,
                     "bm25_rank":       None,
+                    "bm25_score":      None,
                     "content":         d,
                 })
+
+        if hybrid:
+            # ── Step 1b: BM25 keyword search over full corpus ──
+            bm25, corpus_docs = load_bm25_corpus(collection)
+            kw_docs = keyword_search(question, bm25, corpus_docs, n_results, id_to_name)
+
+            # Post-filter BM25 results by metadata (BM25 doesn't know about metadata)
+            if metadata_filters:
+                def _passes(doc):
+                    if metadata_filters.get("source") and doc.get("source") != metadata_filters["source"]:
+                        return False
+                    if metadata_filters.get("date_from") and doc["date"] < metadata_filters["date_from"]:
+                        return False
+                    if metadata_filters.get("date_to") and doc["date"] > metadata_filters["date_to"]:
+                        return False
+                    if metadata_filters.get("min_messages", 1) > 1 and doc["message_count"] < metadata_filters["min_messages"]:
+                        return False
+                    return True
+                kw_docs = [d for d in kw_docs if _passes(d)]
+
+            # ── Step 2: Reciprocal Rank Fusion ──
+            docs = rrf_merge(semantic_docs, kw_docs)
         else:
-            # ── Step 1a: Semantic (vector) search ──
-            semantic_docs = []
-            raw = collection.query(
-                query_texts=[question],
-                n_results=n_results,
-                where=where,
-            )
-            if raw["documents"] and raw["documents"][0]:
-                for d, m in zip(raw["documents"][0], raw["metadatas"][0]):
-                    conv_id = m.get("conversation", "")
-                    semantic_docs.append({
-                        "date":            m.get("date", ""),
-                        "conversation_id": conv_id,
-                        "friend":          id_to_name.get(conv_id, conv_id),
-                        "message_count":   m.get("message_count", 1),
-                        "source":          m.get("source", ""),
-                        "rerank_score":    None,
-                        "rrf_score":       None,
-                        "semantic_rank":   None,
-                        "bm25_rank":       None,
-                        "bm25_score":      None,
-                        "content":         d,
-                    })
+            docs = semantic_docs
 
-            if hybrid:
-                # ── Step 1b: BM25 keyword search over full corpus ──
-                bm25, corpus_docs = load_bm25_corpus(collection)
-                kw_docs = keyword_search(question, bm25, corpus_docs, n_results, id_to_name)
+        # ── Step 3: Cross-encoder rerank ──
+        if do_rerank and docs:
+            docs = rerank(question, docs, top_k)
+        else:
+            docs = docs[:top_k]
 
-                # Post-filter BM25 results by metadata (BM25 doesn't know about metadata)
-                if metadata_filters:
-                    def _passes(doc):
-                        if metadata_filters.get("source") and doc.get("source") != metadata_filters["source"]:
-                            return False
-                        if metadata_filters.get("date_from") and doc["date"] < metadata_filters["date_from"]:
-                            return False
-                        if metadata_filters.get("date_to") and doc["date"] > metadata_filters["date_to"]:
-                            return False
-                        if metadata_filters.get("min_messages", 1) > 1 and doc["message_count"] < metadata_filters["min_messages"]:
-                            return False
-                        return True
-                    kw_docs = [d for d in kw_docs if _passes(d)]
-
-                # ── Step 2: Reciprocal Rank Fusion ──
-                docs = rrf_merge(semantic_docs, kw_docs)
-            else:
-                docs = semantic_docs
-
-            # ── Step 3: Cross-encoder rerank ──
-            if do_rerank and docs:
-                docs = rerank(question, docs, top_k)
-            else:
-                docs = docs[:top_k]
+        # Override: Keep ONLY the top 3 BM25 docs if we are in hybrid mode
+        if hybrid:
+            top_bm25 = [d for d in docs if d.get("bm25_rank") in (1, 2, 3)]
+            # If they were lost in the rerank/RRF, fish them directly out of kw_docs
+            if len(top_bm25) < 3:
+                top_bm25 = sorted(kw_docs, key=lambda d: d.get("bm25_rank", 999))[:3]
+            docs = top_bm25
 
     except Exception as e:
         st.error(f"Retrieval error: {e}")
 
-    return docs, episodes
+    return docs, episodes, intent

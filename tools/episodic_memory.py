@@ -100,8 +100,10 @@ def main():
     print(f"Loaded {len(messages)} messages.")
 
     # Embedding function
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL
+        model_name=EMBEDDING_MODEL, device=device
     )
 
     # Database

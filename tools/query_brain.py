@@ -31,8 +31,10 @@ def query_brain(
         collection_name: Name of the collection
     """
     # Embedding model (must match the one used for ingestion)
+    import torch
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-        model_name=EMBEDDING_MODEL
+        model_name=EMBEDDING_MODEL, device=device
     )
     
     # Connect to ChromaDB

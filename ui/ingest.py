@@ -1,5 +1,5 @@
 """
-ui/ingest.py — Vector Store tab (semantic memory).
+ui/ingest.py — Vector Store tab (episodic memory).
 
 Sections:
   1. Connection status + collection stats (per-source document counts)
@@ -17,8 +17,8 @@ from config import CHROMA_PATH, SOURCES
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _scrollable_log(container, lines: list[str], max_height: int = 300):
-    """Render log lines inside a scrollable container with monospace font."""
-    escaped = "\n".join(lines).replace("&", "&").replace("<", "<").replace(">", ">")
+    """Render log lines inside a scrollable container with reversed layout so newest is at the top."""
+    escaped = "\n".join(lines[::-1]).replace("&", "&").replace("<", "<").replace(">", ">")
     container.markdown(
         f'<div style="max-height:{max_height}px;overflow-y:auto;'
         f'background:#0e1117;border:1px solid #333;border-radius:6px;'
@@ -32,7 +32,7 @@ def _scrollable_log(container, lines: list[str], max_height: int = 300):
 
 def render_vector_tab(collection, episodic=None):
     st.markdown("### :material/database: Vector Store")
-    st.caption("Semantic memory stored in ChromaDB — extract your data exports and embed them as searchable documents.")
+    st.caption("Episodic memory stored in ChromaDB — extract your data exports and embed them as searchable documents.")
 
     # ── Connection banner ──
     try:
@@ -89,7 +89,7 @@ def render_vector_tab(collection, episodic=None):
                 f"{src_cfg['label']}  {count:,}",
                 key=f"vec_stat_{src_cfg['id']}",
                 help=f"{src_cfg['description']}",
-                use_container_width=True,
+                width="stretch",
                 type="secondary",
             )
 
@@ -195,6 +195,78 @@ def _render_ingestor_section(collection, current_count: int):
             "Runs `tools/ingest_facebook_messages.py`."
         )
 
+        # ── Pre-ingest Stats Graph ──
+        @st.cache_data(show_spinner=False)
+        def _load_conversation_stats(json_path: str) -> dict[str, int]:
+            import json, os
+            from collections import defaultdict
+            if not os.path.isfile(json_path):
+                return {}
+            try:
+                with open(json_path) as f:
+                    data = json.load(f)
+                counts = defaultdict(int)
+                for msg in data:
+                    if msg.get("text"):
+                        counts[msg.get("conversation", "Unknown")] += 1
+                return dict(counts)
+            except Exception:
+                return {}
+
+        import plotly.graph_objects as go
+        json_default_path = "./data/facebook/facebook_messages.json"
+        conv_stats = _load_conversation_stats(json_default_path)
+        
+        if conv_stats:
+            # Group into logarithmic-style buckets
+            buckets = {
+                "1-10": 0,
+                "11-50": 0,
+                "51-100": 0,
+                "101-500": 0,
+                "501-1k": 0,
+                "1k-5k": 0,
+                "5k-10k": 0,
+                "10k+": 0
+            }
+            for count in conv_stats.values():
+                if count <= 10: buckets["1-10"] += 1
+                elif count <= 50: buckets["11-50"] += 1
+                elif count <= 100: buckets["51-100"] += 1
+                elif count <= 500: buckets["101-500"] += 1
+                elif count <= 1000: buckets["501-1k"] += 1
+                elif count <= 5000: buckets["1k-5k"] += 1
+                elif count <= 10000: buckets["5k-10k"] += 1
+                else: buckets["10k+"] += 1
+            
+            # Remove empty trailing buckets for a cleaner chart (but keep the shape continuous)
+            x_vals = list(buckets.keys())
+            y_vals = list(buckets.values())
+            
+            fig = go.Figure(data=[
+                go.Bar(
+                    x=x_vals, 
+                    y=y_vals,
+                    marker_color="#6366f1",
+                    text=y_vals,
+                    textposition="auto",
+                    hovertemplate="Message count: %{x}<br>Conversations: %{y}<extra></extra>"
+                )
+            ])
+            fig.update_layout(
+                title="Conversation Length Distribution",
+                title_font=dict(size=14, color="#e2e8f0"),
+                xaxis=dict(title="Messages in Conversation", gridcolor="#333", tickfont=dict(size=11)),
+                yaxis=dict(title="Number of Conversations", gridcolor="#333"),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=40, r=20, t=40, b=20),
+                height=280
+            )
+            st.plotly_chart(fig, width="stretch")
+        else:
+            st.info("Run Step 1 to extract stats.")
+
         col_a, col_b = st.columns(2)
         with col_a:
             json_file = st.text_input(
@@ -203,8 +275,8 @@ def _render_ingestor_section(collection, current_count: int):
                 key="ingest_json",
             )
             batch_size = st.number_input(
-                "Batch size", min_value=100, max_value=5000,
-                value=1000, step=100, key="batch_size",
+                "Batch size", min_value=4, max_value=5000,
+                value=32, step=4, key="batch_size",
             )
         with col_b:
             session_gap_h = st.slider(
@@ -259,7 +331,19 @@ def _render_ingestor_section(collection, current_count: int):
                     if lines:
                         _scrollable_log(log_box_ingest, lines)
                     if proc.returncode == 0:
-                        new_count = collection.count()
+                        if reset_col:
+                            # Clear Streamlit caches so they don't hold the old deleted collection UUID
+                            from rag.resources import load_chroma, load_bm25_corpus
+                            load_chroma.clear()
+                            load_bm25_corpus.clear()
+                            
+                            import chromadb
+                            import os
+                            temp_c = chromadb.PersistentClient(path=os.path.expanduser(CHROMA_PATH)).get_collection("virtual_me_knowledge")
+                            new_count = temp_c.count()
+                        else:
+                            new_count = collection.count()
+                            
                         st.success(
                             f"Ingest complete! "
                             f"Documents: {current_count:,} → **{new_count:,}** "

@@ -50,8 +50,10 @@ def load_mappings():
 NAME_MAPPING, REVERSE_NAME_MAPPING = load_mappings()
 
 # Embedding function (must match ingestion model)
+import torch
+_device = "cuda" if torch.cuda.is_available() else "cpu"
 embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name=EMBEDDING_MODEL
+    model_name=EMBEDDING_MODEL, device=_device
 )
 
 # Connect to collections

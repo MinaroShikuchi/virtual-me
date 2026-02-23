@@ -20,19 +20,26 @@ def render_sidebar(collection, episodic):
     init_settings_defaults()
 
     with st.sidebar:
-        st.divider()
         st.markdown("**Connections**")
 
         # ── ChromaDB status ───────────────────────────────────────────────
-        count = collection.count()
-        st.markdown(f'<span class="status-ok">● ChromaDB</span> — {count:,} docs',
-                    unsafe_allow_html=True)
+        try:
+            count = collection.count()
+            st.markdown(f'<span class="status-ok">● ChromaDB</span> — {count:,} docs',
+                        unsafe_allow_html=True)
+        except Exception:
+            st.markdown('<span class="status-err">○ ChromaDB</span> — collection stale (re-ingest or restart app)',
+                        unsafe_allow_html=True)
 
         # ── Episodic Memory status ────────────────────────────────────────
         if episodic:
-            ec = episodic.count()
-            st.markdown(f'<span class="status-ok">● Episodic Memory</span> — {ec:,} episodes',
-                        unsafe_allow_html=True)
+            try:
+                ec = episodic.count()
+                st.markdown(f'<span class="status-ok">● Episodic Memory</span> — {ec:,} episodes',
+                            unsafe_allow_html=True)
+            except Exception:
+                st.markdown('<span class="status-warn">○ Episodic Memory</span> — stale',
+                            unsafe_allow_html=True)
         else:
             st.markdown('<span class="status-warn">○ Episodic Memory</span> — not found',
                         unsafe_allow_html=True)

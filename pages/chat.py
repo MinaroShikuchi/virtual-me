@@ -7,7 +7,7 @@ from ui.settings import render_settings, init_settings_defaults
 
 def page():
     init_settings_defaults()
-    model, ollama_host, num_ctx, n_results, top_k, do_rerank, hybrid, \
+    model, intent_model, ollama_host, num_ctx, deliberation_rounds, active_personas, enable_thinking, system_prompt, n_results, top_k, do_rerank, hybrid, \
         *_ = render_settings()
 
     collection, episodic = load_chroma()
@@ -15,5 +15,5 @@ def page():
 
     render_chat_tab(
         collection, episodic, id_to_name, name_to_id,
-        model, ollama_host, num_ctx, n_results, top_k, do_rerank, hybrid,
+        model, intent_model, ollama_host, num_ctx, deliberation_rounds, active_personas, enable_thinking, system_prompt, n_results, top_k, do_rerank, hybrid,
     )
