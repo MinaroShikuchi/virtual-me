@@ -347,9 +347,10 @@ def _neo4j_tab() -> rx.Component:
     )
 
 
-def _tab_button(label: str, tab_key: str) -> rx.Component:
+def _tab_button(label: str, tab_key: str, icon_name: str) -> rx.Component:
     """A sidebar tab button that highlights when active."""
     return rx.button(
+        rx.icon(icon_name, size=16),
         label,
         variant=rx.cond(
             SettingsState.active_tab == tab_key, "solid", "ghost"
@@ -376,10 +377,10 @@ def settings_dialog() -> rx.Component:
             rx.hstack(
                 # Left: tab navigation sidebar
                 rx.vstack(
-                    _tab_button("🤖 LLM", "llm"),
-                    _tab_button("🧠 Embedding", "embedding"),
-                    _tab_button("🔎 RAG", "rag"),
-                    _tab_button("🕸️ Neo4j", "neo4j"),
+                    _tab_button("LLM", "llm", "bot"),
+                    _tab_button("Embedding", "embedding", "brain"),
+                    _tab_button("RAG", "rag", "search"),
+                    _tab_button("Neo4j", "neo4j", "network"),
                     width="180px",
                     spacing="2",
                     padding_top="4px",
