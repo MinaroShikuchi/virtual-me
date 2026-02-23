@@ -85,9 +85,14 @@ class SettingsState(rx.State):
         try:
             import ollama as _ollama
             client = _ollama.Client(host=self.draft_ollama_host)
-            self.available_models = [
-                m["model"] for m in client.list().get("models", [])
-            ]
+            resp = client.list()
+            # ollama >= 0.4 returns ListResponse with .models attribute
+            models_list = getattr(resp, "models", None)
+            if models_list is None and isinstance(resp, dict):
+                models_list = resp.get("models", [])
+            self.available_models = sorted(
+                [getattr(m, "model", None) or m.get("model", "") for m in (models_list or [])]
+            )
         except Exception:
             self.available_models = []
 

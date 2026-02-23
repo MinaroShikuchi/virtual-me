@@ -88,9 +88,13 @@ class AppState(rx.State):
         try:
             import ollama as _ollama
             client = _ollama.Client(host=self.ollama_host)
-            models = client.list().get("models", [])
+            resp = client.list()
+            # ollama >= 0.4 returns ListResponse with .models attribute
+            models_list = getattr(resp, "models", None)
+            if models_list is None and isinstance(resp, dict):
+                models_list = resp.get("models", [])
             self.ollama_connected = True
-            self.ollama_model_count = len(models)
+            self.ollama_model_count = len(models_list or [])
         except Exception:
             self.ollama_connected = False
             self.ollama_model_count = 0
