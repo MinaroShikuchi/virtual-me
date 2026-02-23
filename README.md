@@ -1,168 +1,190 @@
-# Virtual Me - Personal Data Extraction & Brain
+# Virtual Me — Personal AI Brain
 
-Extract and structure personal data from various sources for ChromaDB ingestion.
+A full-stack **Reflex** application that ingests your personal data (Facebook messages, Spotify history, Google locations, LinkedIn, Strava) into a vector database and knowledge graph, then lets you chat with an AI that answers as *you* — using RAG retrieval, an Inner Deliberation Committee of psychological personas, and a Neo4j-backed semantic memory.
 
 ## Features
 
-- **Facebook Message Extraction**: Extract messages from Facebook HTML exports
-- **ChromaDB Integration**: Persistent vector database for semantic search
-- **Production Quality**: Type hints, error handling, modular code
+- **RAG Chat** — Hybrid semantic + BM25 search over your memories, with Ollama LLM integration and thinking-token support
+- **Inner Deliberation Committee** — Multiple IFS-inspired personas (The Self, The Protector, The Inner Child, etc.) deliberate before synthesizing a final answer
+- **Knowledge Graph** — Neo4j-backed entity extraction and relationship mapping from your data
+- **Dashboard** — Overview of all data sources, ChromaDB stats, and Neo4j graph statistics
+- **Vector Store** — Ingest and manage Facebook messages in ChromaDB with windowed chunking
+- **Entity Browser** — Search and explore entities in the knowledge graph
+- **RAG Explorer** — Debug and inspect the retrieval pipeline with metadata filters
+- **Settings** — Configurable LLM model, context window, embedding model, RAG parameters, and Neo4j connection
+
+## Prerequisites
+
+- **Python 3.10+**
+- **Node.js 18+** (required by Reflex for the frontend build)
+- **Ollama** running locally (or remote) with at least one model pulled
+- **Neo4j** (optional, for knowledge graph features)
 
 ## Setup
 
-### 1. Install Dependencies
+### 1. Clone and install
 
 ```bash
+git clone https://github.com/your-user/virtual-me.git
+cd virtual-me
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Extract Facebook Messages
+### 2. Environment variables
 
-Edit `extract_facebook.py` to set your paths:
+Create a `.env` file (loaded automatically by Reflex):
 
-```python
-DATA_DIR = "/path/to/facebook/export/messages/inbox"
-TARGET_USER = "Your Name"
-OUTPUT_FILE = "facebook_messages.json"
+```env
+# Ollama
+OLLAMA_HOST=http://localhost:11434
+
+# Neo4j (optional)
+NEO4J_URI=bolt://localhost:7687
+NEO4J_USER=neo4j
+NEO4J_PASSWORD=password
+
+# Embedding model (default: BAAI/bge-m3)
+# EMBEDDING_MODEL=BAAI/bge-m3
+
+# Knowledge graph self-identity node name
+# SELF_NAME=ME
 ```
 
-Run extraction:
+### 3. Start backend services
 
 ```bash
-python extract_facebook.py
-```
+# Start Neo4j and ChromaDB (optional — app works without them)
+docker compose up -d
 
-### 3. Ingest into ChromaDB
-
-```bash
-python ingest_facebook_messages.py
-```
-
-This creates a local ChromaDB instance in `./chroma_data/` (no Docker required).
-
-### 4. Query Your Brain
-
-**Option A: Simple Semantic Search**
-
-```bash
-python query_brain.py
-```
-
-Returns the most relevant messages without AI interpretation.
-
-**Option B: RAG with Ollama (Recommended)**
-
-First, install and run Ollama:
-
-```bash
-# Install Ollama (if not already installed)
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull a model
+# Pull an Ollama model
 ollama pull qwen2.5:7b
-
-# Start Ollama server (in a separate terminal)
-ollama serve
 ```
 
-Then run the RAG query:
+### 4. Run the app
 
 ```bash
-python query_my_history.py
+reflex run
 ```
 
-This combines semantic search with an LLM to provide natural language answers about your message history.
+The app will be available at **http://localhost:3000**.
 
-## Usage
-
-### Simple Semantic Search
-
-```python
-import chromadb
-from chromadb.utils import embedding_functions
-
-# Connect to ChromaDB
-client = chromadb.PersistentClient(path="./chroma_data")
-
-# Get collection
-embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(
-    model_name="all-MiniLM-L6-v2"
-)
-collection = client.get_collection(
-    name="virtual_me_knowledge",
-    embedding_function=embedding_func
-)
-
-# Query
-results = collection.query(
-    query_texts=["What did I say about Paris?"],
-    n_results=5
-)
-
-for doc, metadata in zip(results['documents'][0], results['metadatas'][0]):
-    print(f"[{metadata['date']}] {doc}")
-```
-
-### RAG with Ollama
-
-The `query_my_history.py` script provides natural language Q&A:
+For production:
 
 ```bash
-$ python query_my_history.py
-
-🧠 Personal Facebook History RAG System
-================================================================================
-Model: qwen2.5:7b
-Messages: 29448
-================================================================================
-
-Example questions:
-  • What did I talk about with [person]?
-  • When did I last mention Paris?
-  • What were my thoughts on work in 2020?
-  • Summarize my conversations about projects
-
-💬 Ask about your history (or 'quit'): What did I say about Paris in 2016?
-
-🔍 Searching memories for: 'What did I say about Paris in 2016?'...
-
-📚 Retrieved messages:
---------------------------------------------------------------------------------
-1. [2016-08-25] A Paris
-2. [2016-09-12] OK met message instant
-3. [2015-01-28] Paris 13
---------------------------------------------------------------------------------
-
-🤖 Answer:
-
-Based on your Facebook messages, on August 25, 2016, you mentioned "A Paris"...
+reflex run --env prod
 ```
 
 ## Project Structure
 
 ```
 .
-├── extract_facebook.py          # Extract messages from Facebook HTML
-├── ingest_facebook_messages.py  # Ingest into ChromaDB
-├── query_brain.py               # Simple semantic search
-├── query_my_history.py          # RAG with Ollama
-├── docker-compose.yml           # Optional Docker setup
+├── config.py                    # Central configuration and data-source registry
+├── rxconfig.py                  # Reflex framework configuration
+├── docker-compose.yml           # Neo4j + ChromaDB containers
 ├── requirements.txt             # Python dependencies
-├── facebook_messages.json       # Extracted messages (generated)
-└── chroma_data/                 # ChromaDB persistent storage (generated)
+├── conversation_names.json      # Facebook conversation ID → name mapping
+│
+├── virtual_me/                  # Reflex application
+│   ├── virtual_me.py            # App entry point and routing
+│   ├── components/
+│   │   ├── layout.py            # Sidebar, nav links, status badges
+│   │   └── settings_dialog.py   # Settings dialog with draft/commit pattern
+│   ├── pages/
+│   │   ├── chat.py              # Chat page (streaming, deliberation, info bar)
+│   │   ├── dashboard.py         # Dashboard page (stats, charts)
+│   │   ├── entity_browser.py    # Entity browser page
+│   │   ├── graph.py             # Knowledge graph extractor page
+│   │   ├── rag_explorer.py      # RAG debug/explorer page
+│   │   └── vector.py            # Vector store ingestor page
+│   └── state/
+│       ├── app_state.py         # Root state (settings, connections)
+│       ├── chat_state.py        # Chat state (messages, streaming)
+│       ├── dashboard_state.py   # Dashboard state (stats)
+│       ├── entity_browser_state.py
+│       ├── graph_state.py       # Graph extractor state
+│       ├── rag_explorer_state.py
+│       └── vector_state.py      # Vector ingestor state
+│
+├── rag/                         # RAG pipeline (framework-agnostic)
+│   ├── retrieval.py             # Hybrid search (semantic + BM25 + RRF + rerank)
+│   ├── llm.py                   # Ollama LLM calls, deliberation, thinking tokens
+│   └── graph_retrieval.py       # Neo4j fact retrieval for RAG context
+│
+├── services/                    # Singleton service layer (replaces Streamlit caching)
+│   ├── bm25_service.py          # BM25 keyword index
+│   ├── chroma_service.py        # ChromaDB client and collections
+│   ├── embedding_service.py     # Sentence-transformer embedding function
+│   ├── mapping_service.py       # Conversation name mappings
+│   └── reranker_service.py      # Cross-encoder reranker
+│
+├── graph/                       # Knowledge graph layer
+│   ├── neo4j_client.py          # Neo4j driver wrapper (MERGE, stats, search)
+│   └── constants.py             # Entity labels, relationship types, colors
+│
+├── tools/                       # CLI data extractors and ingestors
+│   ├── ingest_facebook_messages.py
+│   ├── build_knowledge_graph.py
+│   ├── create_name_mapping.py
+│   ├── episodic_memory.py
+│   └── extractors/              # Per-source extractors
+│       ├── facebook_messages.py
+│       ├── facebook_contacts.py
+│       ├── google_timeline.py
+│       ├── linkedin_connections.py
+│       ├── linkedin_education.py
+│       ├── linkedin_positions.py
+│       ├── spotify.py
+│       └── strava.py
+│
+├── assets/                      # Static assets (favicon, etc.)
+├── data/                        # Data exports (gitignored)
+└── plans/                       # Migration planning docs
 ```
 
-## Output Format
+## Architecture
 
-Each message is structured as:
-
-```json
-{
-  "date": "2015-06-18T21:35:16",
-  "source": "facebook",
-  "text": "message content",
-  "conversation": "conversation_name"
-}
 ```
+┌─────────────────────────────────────────────────┐
+│                  Reflex Frontend                 │
+│  (React, compiled from Python component tree)    │
+├─────────────────────────────────────────────────┤
+│              Reflex State Classes                │
+│  AppState → ChatState, DashboardState, etc.      │
+├──────────┬──────────┬───────────────────────────┤
+│ services/│   rag/   │        graph/             │
+│ (singletons)│ (pipeline)│  (Neo4j client)       │
+├──────────┴──────────┴───────────────────────────┤
+│  ChromaDB    │    Ollama    │      Neo4j         │
+└──────────────┴──────────────┴────────────────────┘
+```
+
+## Data Sources
+
+| Source | Type | Description |
+|--------|------|-------------|
+| Facebook Messages | Chat history | Windowed chunks from Messenger export |
+| Google Locations | Location history | Places from Google Takeout |
+| Spotify | Listening history | Extended streaming history |
+| LinkedIn | Professional | Connections, positions, education |
+| Strava | Fitness | Activity data |
+
+## Configuration
+
+All defaults are in [`config.py`](config.py). Key settings:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `DEFAULT_MODEL` | `qwen2.5:7b` | Primary Ollama model |
+| `DEFAULT_INTENT_MODEL` | `llama3.2:3b` | Intent analysis model |
+| `DEFAULT_OLLAMA` | `http://localhost:11434` | Ollama API endpoint |
+| `DEFAULT_CTX` | `32768` | Context window size |
+| `EMBEDDING_MODEL` | `BAAI/bge-m3` | Sentence-transformer model |
+| `NEO4J_URI` | `bolt://localhost:7687` | Neo4j connection |
+
+All settings can be changed at runtime via the Settings dialog in the app.
+
+## License
+
+Private project.

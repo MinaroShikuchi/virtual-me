@@ -1,10 +1,13 @@
+# Reflex build artifacts
 .web/
+
+# Python bytecode
 *.py[cod]
-*.db
-.states
-assets/external/
+__pycache__/
+
 # Virtual environment
 .venv/
+.venv-unshared/
 venv/
 
 # ChromaDB data
@@ -13,11 +16,6 @@ chroma_data/
 
 # Neo4j data
 neo4j_data/
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
 
 # Data files (large exports — keep folder structure, ignore payloads)
 data/*
@@ -32,3 +30,15 @@ facebook_clean.json
 # IDE
 .vscode/
 .idea/
+
+# macOS
+.DS_Store
+
+# Reflex state cache
+.states/
+
+# SQLite (Reflex state DB)
+*.db
+
+# Pickle files
+*.pkl
