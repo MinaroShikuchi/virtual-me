@@ -138,12 +138,12 @@ def sidebar() -> rx.Component:
 
 
 def layout(page_content: rx.Component) -> rx.Component:
-    """Wrap a page component with sidebar + settings drawer."""
-    from virtual_me.components.settings_drawer import settings_drawer
+    """Wrap a page component with sidebar + settings dialog."""
+    from virtual_me.components.settings_dialog import settings_dialog
 
     return rx.box(
         sidebar(),
-        settings_drawer(),
+        settings_dialog(),
         rx.box(
             page_content,
             margin_left="240px",

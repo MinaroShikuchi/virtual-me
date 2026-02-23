@@ -49,11 +49,11 @@ class AppState(rx.State):
     ollama_model_count: int = 0
     neo4j_connected: bool = False
 
-    # ── Settings drawer ──
+    # ── Settings dialog ──
     settings_open: bool = False
 
     def toggle_settings(self):
-        """Open/close the settings drawer."""
+        """Open/close the settings dialog."""
         self.settings_open = not self.settings_open
 
     def open_settings(self):

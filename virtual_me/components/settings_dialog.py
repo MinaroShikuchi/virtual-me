@@ -1,5 +1,5 @@
 """
-virtual_me/components/settings_drawer.py — Settings drawer (slide-out panel).
+virtual_me/components/settings_dialog.py — Settings dialog (centered modal).
 """
 import reflex as rx
 from virtual_me.state.app_state import AppState
@@ -70,7 +70,7 @@ class SettingsState(rx.State):
             self.available_models = []
 
     async def save_and_close(self):
-        """Commit draft values to AppState and close drawer."""
+        """Commit draft values to AppState and close dialog."""
         app = await self.get_state(AppState)
         app.save_settings(
             ollama_host=self.draft_ollama_host,
@@ -175,8 +175,8 @@ class SettingsState(rx.State):
         self.draft_neo4j_password = value
 
     @rx.event
-    async def handle_drawer_open_change(self, is_open: bool):
-        """Handle drawer open/close state changes."""
+    async def handle_dialog_open_change(self, is_open: bool):
+        """Handle dialog open/close state changes."""
         app = await self.get_state(AppState)
         if is_open:
             app.open_settings()
@@ -360,87 +360,73 @@ def _tab_button(label: str, tab_key: str) -> rx.Component:
     )
 
 
-def settings_drawer() -> rx.Component:
-    """The settings slide-out drawer."""
-    return rx.drawer.root(
-        rx.drawer.overlay(),
-        rx.drawer.content(
-            rx.vstack(
-                # Header
-                rx.hstack(
-                    rx.heading("Settings", size="5"),
-                    rx.spacer(),
-                    rx.drawer.close(
-                        rx.icon_button(
-                            rx.icon("x"),
-                            variant="ghost",
-                        ),
-                    ),
-                    width="100%",
-                    align="center",
-                ),
-                rx.divider(),
-
-                # Main body: left sidebar + right content
-                rx.hstack(
-                    # Left: tab navigation sidebar
-                    rx.vstack(
-                        _tab_button("🤖 LLM", "llm"),
-                        _tab_button("🧠 Embedding", "embedding"),
-                        _tab_button("🔎 RAG", "rag"),
-                        _tab_button("🕸️ Neo4j", "neo4j"),
-                        width="180px",
-                        spacing="2",
-                        padding_top="4px",
-                        align_items="stretch",
-                        flex_shrink="0",
-                    ),
-                    # Right: content for selected tab
-                    rx.box(
-                        rx.cond(SettingsState.active_tab == "llm", _llm_tab()),
-                        rx.cond(SettingsState.active_tab == "embedding", _embedding_tab()),
-                        rx.cond(SettingsState.active_tab == "rag", _rag_tab()),
-                        rx.cond(SettingsState.active_tab == "neo4j", _neo4j_tab()),
-                        flex="1",
-                        overflow_y="auto",
-                        padding_left="16px",
-                    ),
-                    height="100%",
-                    width="100%",
-                    spacing="4",
-                    flex="1",
-                    overflow="hidden",
-                ),
-
-                rx.divider(),
-
-                # Bottom: Save / Cancel buttons
-                rx.hstack(
-                    rx.drawer.close(
-                        rx.button(
-                            "Cancel",
-                            variant="outline",
-                            color_scheme="gray",
-                        ),
-                    ),
-                    rx.button(
-                        "Save Settings",
-                        color_scheme="iris",
-                        on_click=SettingsState.save_and_close,
-                    ),
-                    spacing="3",
-                    justify="end",
-                    width="100%",
-                ),
-
-                spacing="4",
-                padding="20px",
-                height="100%",
+def settings_dialog() -> rx.Component:
+    """The settings centered modal dialog."""
+    return rx.dialog.root(
+        rx.dialog.content(
+            rx.dialog.title("Settings"),
+            rx.dialog.description(
+                "Configure LLM, embedding, RAG, and Neo4j settings.",
+                size="2",
+                color="#94a3b8",
             ),
-            width="600px",
+            rx.divider(),
+
+            # Main body: left sidebar + right content
+            rx.hstack(
+                # Left: tab navigation sidebar
+                rx.vstack(
+                    _tab_button("🤖 LLM", "llm"),
+                    _tab_button("🧠 Embedding", "embedding"),
+                    _tab_button("🔎 RAG", "rag"),
+                    _tab_button("🕸️ Neo4j", "neo4j"),
+                    width="180px",
+                    spacing="2",
+                    padding_top="4px",
+                    align_items="stretch",
+                    flex_shrink="0",
+                ),
+                # Right: content for selected tab
+                rx.box(
+                    rx.cond(SettingsState.active_tab == "llm", _llm_tab()),
+                    rx.cond(SettingsState.active_tab == "embedding", _embedding_tab()),
+                    rx.cond(SettingsState.active_tab == "rag", _rag_tab()),
+                    rx.cond(SettingsState.active_tab == "neo4j", _neo4j_tab()),
+                    flex="1",
+                    overflow_y="auto",
+                    padding_left="16px",
+                    max_height="60vh",
+                ),
+                width="100%",
+                spacing="4",
+                flex="1",
+                overflow="hidden",
+            ),
+
+            rx.divider(),
+
+            # Bottom: Save / Cancel buttons
+            rx.hstack(
+                rx.dialog.close(
+                    rx.button(
+                        "Cancel",
+                        variant="outline",
+                        color_scheme="gray",
+                    ),
+                ),
+                rx.button(
+                    "Save Settings",
+                    color_scheme="iris",
+                    on_click=SettingsState.save_and_close,
+                ),
+                spacing="3",
+                justify="end",
+                width="100%",
+            ),
+
+            max_width="700px",
             bg="#1a1d2e",
         ),
         open=AppState.settings_open,
-        on_open_change=SettingsState.handle_drawer_open_change,
-        direction="right",
+        on_open_change=SettingsState.handle_dialog_open_change,
     )
