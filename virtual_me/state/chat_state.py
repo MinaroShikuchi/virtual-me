@@ -73,81 +73,99 @@ class ChatState(AppState):
             from services.embedding_service import get_embedding_func
             from services.chroma_service import get_collection, get_episodic
             from services.mapping_service import get_mappings
-            from rag.retrieval import retrieve
-            from rag.graph_retrieval import retrieve_facts
 
             ef = get_embedding_func(embedding_model)
             collection = get_collection(ef)
             episodic = get_episodic(ef)
             id_to_name, name_to_id = get_mappings()
 
-            # Retrieve
-            docs, episodes, intent = retrieve(
-                question,
-                n_results,
-                collection,
-                episodic,
-                id_to_name,
-                name_to_id,
-                intent_model,
-                ollama_host,
-                metadata_filters=None,
-                top_k=top_k,
-                do_rerank=do_rerank,
-                hybrid=hybrid,
-            )
-
-            # Graph facts
-            facts = retrieve_facts(intent)
-
-            # Context purification
-            async with self:
-                self.loading_status = "Purifying context…"
-
-            from rag.llm import filter_irrelevant_context
-
-            docs = filter_irrelevant_context(
-                question, docs, intent_model, ollama_host
-            )
-
-            if not docs and not episodes and not facts:
-                async with self:
-                    self.messages.append(
-                        ChatMessage(
-                            role="assistant",
-                            content="No relevant memories found.",
-                            intent=intent,
-                            facts=facts,
-                        )
-                    )
-                    self.is_loading = False
-                    self.loading_status = ""
-                return
-
-            # LLM call
+            # ── Committee mode: agent loop (personas search autonomously) ──
             if active_personas and deliberation_rounds > 0:
                 async with self:
                     self.loading_status = (
                         "Inner Deliberation Committee deliberating…"
                     )
 
+                from rag.tools import ToolExecutor
                 from rag.llm import deliberate_and_synthesize
+
+                tool_executor = ToolExecutor(
+                    collection=collection,
+                    episodic=episodic,
+                    id_to_name=id_to_name,
+                    name_to_id=name_to_id,
+                    intent_model=intent_model,
+                    ollama_host=ollama_host,
+                    n_results=n_results,
+                    top_k=top_k,
+                    do_rerank=do_rerank,
+                    hybrid=hybrid,
+                )
 
                 thinking, answer, p_tok, c_tok, deliberations = (
                     deliberate_and_synthesize(
                         question,
-                        docs,
-                        episodes,
-                        facts,
+                        [],       # docs — agents retrieve their own
+                        [],       # episodes
+                        [],       # facts
                         model,
                         ollama_host,
                         num_ctx,
                         active_personas,
                         deliberation_rounds,
                         enable_thinking,
+                        tool_executor=tool_executor,
                     )
                 )
+                intent = {}
+                facts_list: list[str] = []
+
+            # ── Solo mode: upfront retrieval + single LLM call ─────────
             else:
+                from rag.retrieval import retrieve
+                from rag.graph_retrieval import retrieve_facts
+
+                docs, episodes, intent = retrieve(
+                    question,
+                    n_results,
+                    collection,
+                    episodic,
+                    id_to_name,
+                    name_to_id,
+                    intent_model,
+                    ollama_host,
+                    metadata_filters=None,
+                    top_k=top_k,
+                    do_rerank=do_rerank,
+                    hybrid=hybrid,
+                )
+
+                facts_list = retrieve_facts(intent)
+
+                # Context purification
+                async with self:
+                    self.loading_status = "Purifying context…"
+
+                from rag.llm import filter_irrelevant_context
+
+                docs = filter_irrelevant_context(
+                    question, docs, intent_model, ollama_host
+                )
+
+                if not docs and not episodes and not facts_list:
+                    async with self:
+                        self.messages.append(
+                            ChatMessage(
+                                role="assistant",
+                                content="No relevant memories found.",
+                                intent=intent,
+                                facts=facts_list,
+                            )
+                        )
+                        self.is_loading = False
+                        self.loading_status = ""
+                    return
+
                 async with self:
                     self.loading_status = "Asking " + model + "…"
 
@@ -157,7 +175,7 @@ class ChatState(AppState):
                     question,
                     docs,
                     episodes,
-                    facts,
+                    facts_list,
                     model,
                     ollama_host,
                     num_ctx,
@@ -175,7 +193,7 @@ class ChatState(AppState):
                         prompt_tokens=p_tok,
                         completion_tokens=c_tok,
                         intent=intent,
-                        facts=facts,
+                        facts=facts_list,
                         deliberations=deliberations or [],
                     )
                 )

@@ -151,33 +151,56 @@ def call_llm(question: str, docs: list, episodes: list, facts: list,
 def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: list,
                               model: str, ollama_host: str, num_ctx: int,
                               active_personas: list, deliberation_rounds: int, enable_thinking: bool = True,
-                              update_callback=None):
+                              update_callback=None, tool_executor=None):
     """
     Returns (thinking, answer, prompt_tokens, completion_tokens, deliberations).
-    Deliberations is a list of dicts: {"persona": name, "round": r, "response": text}
+
+    When *tool_executor* is provided the new agent-loop path is used:
+    each persona becomes an autonomous tool-calling agent that decides
+    for itself whether to search memories / the knowledge graph.
+
+    When *tool_executor* is ``None`` the legacy static-context path is
+    used as a fallback (identical to the pre-agent-loop behaviour).
     """
+    # ── New path: agent loop ───────────────────────────────────────────
+    if tool_executor is not None:
+        from rag.agent import run_committee
+
+        return run_committee(
+            question=question,
+            active_personas=active_personas,
+            model=model,
+            ollama_host=ollama_host,
+            num_ctx=num_ctx,
+            tool_executor=tool_executor,
+            deliberation_rounds=deliberation_rounds,
+            enable_thinking=enable_thinking,
+            update_callback=update_callback,
+        )
+
+    # ── Legacy path: static context (fallback) ─────────────────────────
     ctx = _build_context_string(docs, episodes, facts)
     client = ollama.Client(host=ollama_host)
-    
+
     total_prompt_tok = 0
     total_comp_tok = 0
     deliberations = []
-    
+
     # 1. Deliberation Rounds
     for r in range(1, deliberation_rounds + 1):
         for persona in active_personas:
             if persona not in IDENTITIES:
                 continue
-                
+
             persona_sys_prompt = IDENTITIES[persona]
-            
+
             # Inject previous deliberations into the context for this persona
             delib_ctx = ""
             if deliberations:
                 delib_ctx = "\n\n=== PREVIOUS DELIBERATIONS FROM OTHER PERSONAS ===\n"
                 for d in deliberations:
                     delib_ctx += f"[{d['persona']} - Round {d['round']}]: {d['response']}\n\n"
-                    
+
             full_system_prompt = (
                 f"{persona_sys_prompt}\n\n"
                 f"You are participating in an inner committee to help answer a question. "
@@ -189,7 +212,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 f"Do not confuse past relationships with current ones.\n\n"
                 f"CONTEXT:\n{ctx}{delib_ctx}"
             )
-            
+
             chat_kwargs = {
                 "model": model,
                 "messages": [
@@ -199,32 +222,33 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 "stream": False,
                 "options": {"num_ctx": num_ctx},
             }
-            
+
             print(f"\n{'='*50}\n[DEBUG: INPUT TO {persona.upper()} (ROUND {r})]\n{'='*50}")
             print(f"SYSTEM PROMPT:\n{full_system_prompt}")
             print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n")
-            
+
             if enable_thinking:
                 chat_kwargs["think"] = True
-                
+
             if update_callback:
                 update_callback(persona, r, "working", None)
-                
+
             resp = _safe_chat(client, chat_kwargs)
-            
+
             thinking, answer, p_tok, c_tok = _parse_llm_response(resp)
             total_prompt_tok += p_tok
             total_comp_tok += c_tok
-            
+
             if update_callback:
                 update_callback(persona, r, "done", answer)
-                
+
             deliberations.append({
                 "persona": persona,
                 "round": r,
-                "response": answer
+                "response": answer,
+                "tool_trace": [],
             })
-            
+
     # 2. Final Synthesis by "The Self"
     synthesis_sys_prompt = IDENTITIES.get("The Self", "You are the balanced core Self.")
     delib_ctx = "\n\n=== INNER COMMITTEE DELIBERATION ===\n"
@@ -233,7 +257,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
             delib_ctx += f"[{d['persona']} - Round {d['round']}]: {d['response']}\n\n"
     else:
         delib_ctx += "No other personas participated.\n\n"
-        
+
     full_system_prompt = (
         f"{synthesis_sys_prompt}\n\n"
         f"You have listened to the deliberations of your inner committee. "
@@ -246,7 +270,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         f"Do not confuse past relationships with current ones.\n\n"
         f"CONTEXT:\n{ctx}{delib_ctx}"
     )
-    
+
     chat_kwargs = {
         "model": model,
         "messages": [
@@ -256,18 +280,18 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         "stream": False,
         "options": {"num_ctx": num_ctx},
     }
-    
+
     print(f"\n{'='*50}\n[DEBUG: INPUT TO THE SELF (FINAL SYNTHESIS)]\n{'='*50}")
     print(f"SYSTEM PROMPT:\n{full_system_prompt}")
     print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n")
-    
+
     if enable_thinking:
         chat_kwargs["think"] = True
-        
+
     resp = _safe_chat(client, chat_kwargs)
-    
+
     thinking, answer, p_tok, c_tok = _parse_llm_response(resp)
     total_prompt_tok += p_tok
     total_comp_tok += c_tok
-    
+
     return thinking, answer, total_prompt_tok, total_comp_tok, deliberations

@@ -87,8 +87,30 @@ def _intent_block(msg: ChatMessage) -> rx.Component:
     )
 
 
+def _tool_trace_badge(t: dict) -> rx.Component:
+    """Render a single tool-call trace as a compact badge."""
+    return rx.hstack(
+        rx.icon("wrench", size=12, color="#60a5fa"),
+        rx.text(t["tool"], size="1", weight="bold", color="#60a5fa"),
+        rx.text(
+            t["result_preview"],
+            size="1",
+            color="#64748b",
+            max_width="400px",
+            overflow="hidden",
+            text_overflow="ellipsis",
+            white_space="nowrap",
+        ),
+        spacing="1",
+        padding_x="6px",
+        padding_y="2px",
+        background="#1e293b",
+        border_radius="4px",
+    )
+
+
 def _deliberation_item(d: dict) -> rx.Component:
-    """Render a single deliberation entry."""
+    """Render a single deliberation entry with optional tool traces."""
     return rx.box(
         rx.vstack(
             rx.hstack(
@@ -97,6 +119,15 @@ def _deliberation_item(d: dict) -> rx.Component:
                 rx.text(d["round"].to(str), weight="bold", size="2"),
                 rx.text(")", weight="bold", size="2"),
                 spacing="0",
+            ),
+            # Tool traces (shown when tool_trace list is non-empty)
+            rx.cond(
+                d["tool_trace"].length() > 0,
+                rx.vstack(
+                    rx.foreach(d["tool_trace"], _tool_trace_badge),
+                    spacing="1",
+                ),
+                rx.fragment(),
             ),
             rx.text(d["response"], size="2", color="#94a3b8"),
             spacing="1",
