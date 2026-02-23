@@ -39,9 +39,9 @@ class SettingsState(rx.State):
     # Available Ollama models (fetched on open)
     available_models: list[str] = []
 
-    def load_drafts(self):
+    async def load_drafts(self):
         """Copy current AppState values into draft fields."""
-        app = self.get_state(AppState)
+        app = await self.get_state(AppState)
         self.draft_ollama_host = app.ollama_host
         self.draft_model = app.model
         self.draft_intent_model = app.intent_model
@@ -69,9 +69,9 @@ class SettingsState(rx.State):
         except Exception:
             self.available_models = []
 
-    def save_and_close(self):
+    async def save_and_close(self):
         """Commit draft values to AppState and close drawer."""
-        app = self.get_state(AppState)
+        app = await self.get_state(AppState)
         app.save_settings(
             ollama_host=self.draft_ollama_host,
             model=self.draft_model,
@@ -174,12 +174,13 @@ class SettingsState(rx.State):
         """Set draft Neo4j password."""
         self.draft_neo4j_password = value
 
-    def handle_drawer_open_change(self, is_open: bool):
+    @rx.event
+    async def handle_drawer_open_change(self, is_open: bool):
         """Handle drawer open/close state changes."""
-        app = self.get_state(AppState)
+        app = await self.get_state(AppState)
         if is_open:
             app.open_settings()
-            self.load_drafts()
+            await self.load_drafts()
         else:
             app.close_settings()
 
@@ -346,12 +347,26 @@ def _neo4j_tab() -> rx.Component:
     )
 
 
+def _tab_button(label: str, tab_key: str) -> rx.Component:
+    """A sidebar tab button that highlights when active."""
+    return rx.button(
+        label,
+        variant=rx.cond(
+            SettingsState.active_tab == tab_key, "solid", "ghost"
+        ),
+        on_click=SettingsState.set_tab(tab_key),
+        size="2",
+        width="100%",
+    )
+
+
 def settings_drawer() -> rx.Component:
     """The settings slide-out drawer."""
     return rx.drawer.root(
         rx.drawer.overlay(),
         rx.drawer.content(
             rx.vstack(
+                # Header
                 rx.hstack(
                     rx.heading("Settings", size="5"),
                     rx.spacer(),
@@ -366,67 +381,63 @@ def settings_drawer() -> rx.Component:
                 ),
                 rx.divider(),
 
-                # Tab navigation
+                # Main body: left sidebar + right content
                 rx.hstack(
-                    rx.button(
-                        "🤖 LLM",
-                        variant=rx.cond(
-                            SettingsState.active_tab == "llm", "solid", "ghost"
-                        ),
-                        on_click=SettingsState.set_tab("llm"),
-                        size="1",
+                    # Left: tab navigation sidebar
+                    rx.vstack(
+                        _tab_button("🤖 LLM", "llm"),
+                        _tab_button("🧠 Embedding", "embedding"),
+                        _tab_button("🔎 RAG", "rag"),
+                        _tab_button("🕸️ Neo4j", "neo4j"),
+                        width="180px",
+                        spacing="2",
+                        padding_top="4px",
+                        align_items="stretch",
+                        flex_shrink="0",
                     ),
-                    rx.button(
-                        "🧠 Embedding",
-                        variant=rx.cond(
-                            SettingsState.active_tab == "embedding", "solid", "ghost"
-                        ),
-                        on_click=SettingsState.set_tab("embedding"),
-                        size="1",
+                    # Right: content for selected tab
+                    rx.box(
+                        rx.cond(SettingsState.active_tab == "llm", _llm_tab()),
+                        rx.cond(SettingsState.active_tab == "embedding", _embedding_tab()),
+                        rx.cond(SettingsState.active_tab == "rag", _rag_tab()),
+                        rx.cond(SettingsState.active_tab == "neo4j", _neo4j_tab()),
+                        flex="1",
+                        overflow_y="auto",
+                        padding_left="16px",
                     ),
-                    rx.button(
-                        "🔎 RAG",
-                        variant=rx.cond(
-                            SettingsState.active_tab == "rag", "solid", "ghost"
-                        ),
-                        on_click=SettingsState.set_tab("rag"),
-                        size="1",
-                    ),
-                    rx.button(
-                        "🕸️ Neo4j",
-                        variant=rx.cond(
-                            SettingsState.active_tab == "neo4j", "solid", "ghost"
-                        ),
-                        on_click=SettingsState.set_tab("neo4j"),
-                        size="1",
-                    ),
-                    spacing="2",
-                    wrap="wrap",
+                    height="100%",
+                    width="100%",
+                    spacing="4",
+                    flex="1",
+                    overflow="hidden",
                 ),
 
-                # Tab content — use rx.cond to show the active tab
-                rx.cond(SettingsState.active_tab == "llm", _llm_tab()),
-                rx.cond(SettingsState.active_tab == "embedding", _embedding_tab()),
-                rx.cond(SettingsState.active_tab == "rag", _rag_tab()),
-                rx.cond(SettingsState.active_tab == "neo4j", _neo4j_tab()),
-
-                rx.spacer(),
                 rx.divider(),
 
-                # Save button
-                rx.button(
-                    "Save Settings",
+                # Bottom: Save / Cancel buttons
+                rx.hstack(
+                    rx.drawer.close(
+                        rx.button(
+                            "Cancel",
+                            variant="outline",
+                            color_scheme="gray",
+                        ),
+                    ),
+                    rx.button(
+                        "Save Settings",
+                        color_scheme="iris",
+                        on_click=SettingsState.save_and_close,
+                    ),
+                    spacing="3",
+                    justify="end",
                     width="100%",
-                    color_scheme="iris",
-                    on_click=SettingsState.save_and_close,
                 ),
 
                 spacing="4",
                 padding="20px",
                 height="100%",
-                overflow_y="auto",
             ),
-            width="450px",
+            width="600px",
             bg="#1a1d2e",
         ),
         open=AppState.settings_open,
