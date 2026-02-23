@@ -88,24 +88,51 @@ def _intent_block(msg: ChatMessage) -> rx.Component:
 
 
 def _tool_trace_badge(t: dict) -> rx.Component:
-    """Render a single tool-call trace as a compact badge."""
-    return rx.hstack(
-        rx.icon("wrench", size=12, color="#60a5fa"),
-        rx.text(t["tool"].to(str), size="1", weight="bold", color="#60a5fa"),
-        rx.text(
-            t["result_preview"].to(str),
-            size="1",
-            color="#64748b",
-            max_width="400px",
-            overflow="hidden",
-            text_overflow="ellipsis",
-            white_space="nowrap",
+    """Render a single tool-call trace as an expandable accordion."""
+    # Build a human-readable summary of the args
+    args_summary = t["args"].to(str)
+
+    return rx.accordion.root(
+        rx.accordion.item(
+            header=rx.hstack(
+                rx.icon("wrench", size=12, color="#60a5fa"),
+                rx.text(
+                    t["tool"].to(str),
+                    size="1",
+                    weight="bold",
+                    color="#60a5fa",
+                ),
+                rx.text(
+                    args_summary,
+                    size="1",
+                    color="#94a3b8",
+                    max_width="350px",
+                    overflow="hidden",
+                    text_overflow="ellipsis",
+                    white_space="nowrap",
+                ),
+                spacing="1",
+                align="center",
+            ),
+            content=rx.box(
+                rx.text(
+                    t["result_preview"].to(str),
+                    size="1",
+                    color="#cbd5e1",
+                    white_space="pre-wrap",
+                    word_break="break-word",
+                ),
+                padding="8px",
+                background="#0f172a",
+                border_radius="4px",
+                max_height="200px",
+                overflow_y="auto",
+            ),
+            value="trace",
         ),
-        spacing="1",
-        padding_x="6px",
-        padding_y="2px",
-        background="#1e293b",
-        border_radius="4px",
+        type="multiple",
+        width="100%",
+        variant="ghost",
     )
 
 

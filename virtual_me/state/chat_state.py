@@ -1,7 +1,9 @@
 """
 virtual_me/state/chat_state.py — Chat page state.
 """
+import asyncio
 import logging
+import threading
 
 import reflex as rx
 from pydantic import BaseModel
@@ -140,13 +142,43 @@ class ChatState(AppState):
                     do_rerank=do_rerank,
                     hybrid=hybrid,
                 )
+                tool_executor.set_baseline(docs, episodes, facts_list)
 
                 # Build a cancel-check that reads the flag via self
                 def _is_cancelled() -> bool:
                     return self._cancel_requested          # type: ignore[has-type]
 
-                thinking, answer, p_tok, c_tok, deliberations = (
-                    deliberate_and_synthesize(
+                # Status queue: the sync callback pushes status strings,
+                # the async loop below polls and pushes them to the UI.
+                _status_queue: list[str] = []
+                _status_lock = threading.Lock()
+
+                def _on_agent_update(
+                    persona: str, rnd: int, status: str, _response
+                ):
+                    if rnd == 0:
+                        # Step 3/5: The Self reformulates the question
+                        if status == "working":
+                            msg = "🔄 The Self — Reformulating question…"
+                        else:
+                            msg = "✅ The Self — Question reformulated"
+                    elif persona == "The Self" and status == "working" and rnd > deliberation_rounds:
+                        msg = "🔄 The Self — Synthesizing final answer…"
+                    elif status == "working":
+                        msg = f"🔄 {persona} — Round {rnd} (thinking…)"
+                    elif status == "done":
+                        msg = f"✅ {persona} — Round {rnd} (done)"
+                    else:
+                        msg = f"{persona} — Round {rnd}"
+                    with _status_lock:
+                        _status_queue.append(msg)
+
+                # Run the blocking deliberation in a worker thread so we
+                # can poll _status_queue and push UI updates.
+                loop = asyncio.get_running_loop()
+                future = loop.run_in_executor(
+                    None,
+                    lambda: deliberate_and_synthesize(
                         question,
                         docs,
                         episodes,
@@ -159,8 +191,30 @@ class ChatState(AppState):
                         enable_thinking,
                         tool_executor=tool_executor,
                         cancel_check=_is_cancelled,
-                    )
+                        update_callback=_on_agent_update,
+                    ),
                 )
+
+                # Poll for status updates while the thread is running
+                while not future.done():
+                    await asyncio.sleep(0.3)
+                    with _status_lock:
+                        pending = list(_status_queue)
+                        _status_queue.clear()
+                    if pending:
+                        async with self:
+                            self.loading_status = pending[-1]
+
+                # Drain any final status updates produced before the
+                # thread finished but after our last poll.
+                with _status_lock:
+                    pending = list(_status_queue)
+                    _status_queue.clear()
+                if pending:
+                    async with self:
+                        self.loading_status = pending[-1]
+
+                thinking, answer, p_tok, c_tok, deliberations = future.result()
 
             # ── Solo mode: upfront retrieval + single LLM call ─────────
             else:

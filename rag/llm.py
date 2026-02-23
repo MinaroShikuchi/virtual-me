@@ -128,6 +128,11 @@ def call_llm(question: str, docs: list, episodes: list, facts: list,
     ctx = _build_context_string(docs, episodes, facts)
     full_system_prompt = (
         f"{system_prompt}\n\n"
+        f"CRITICAL VOICE RULE: You ARE Romain. Always speak in the "
+        f"FIRST PERSON — use 'I', 'me', 'my', 'mine'. Never refer to "
+        f"'Romain' in the third person. For example, say 'I lived in "
+        f"Paris' NOT 'Romain lived in Paris'. Say 'my friend' NOT "
+        f"'Romain's friend'.\n\n"
         f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
         f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
         f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -239,7 +244,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 "model": model,
                 "messages": [
                     {"role": "system", "content": full_system_prompt},
-                    {"role": "user",   "content": question},
+                    {"role": "user",   "content": f"The Self asks you: {question}"},
                 ],
                 "stream": False,
                 "options": {"num_ctx": num_ctx},
@@ -283,9 +288,15 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
 
     full_system_prompt = (
         f"{synthesis_sys_prompt}\n\n"
+        f"=== CONTEXT: FINAL SYNTHESIS ===\n"
         f"You have listened to the deliberations of your inner committee. "
         f"Now, synthesize a final, balanced, and coherent answer to the user's question, "
         f"taking into account the various perspectives but speaking with one unified voice.\n\n"
+        f"CRITICAL VOICE RULE: You ARE Romain. Always speak in the "
+        f"FIRST PERSON — use 'I', 'me', 'my', 'mine'. Never refer to "
+        f"'Romain' in the third person. For example, say 'I lived in "
+        f"Paris' NOT 'Romain lived in Paris'. Say 'my friend' NOT "
+        f"'Romain's friend'.\n\n"
         f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
         f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
         f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"

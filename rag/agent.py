@@ -7,6 +7,7 @@ into a final answer.
 """
 from __future__ import annotations
 
+import json
 import logging
 
 import ollama
@@ -32,6 +33,7 @@ def _run_persona_agent(
     enable_thinking: bool = True,
     max_iterations: int = MAX_TOOL_ITERATIONS,
     initial_context: str = "",
+    is_synthesis: bool = False,
 ) -> dict:
     """Run a single persona as a tool-calling agent.
 
@@ -45,6 +47,9 @@ def _run_persona_agent(
         Pre-retrieved context from upfront naive retrieval.  Injected
         into the system prompt so the persona has baseline knowledge
         before deciding whether to call additional tools.
+    is_synthesis : bool
+        When ``True`` this is The Self performing final synthesis.
+        The prompt switches to first-person voice and integration mode.
 
     Returns
     -------
@@ -69,31 +74,65 @@ def _run_persona_agent(
             f"{initial_context}\n"
         )
 
-    system_prompt = (
-        f"{persona_prompt}\n\n"
-        "=== CONTEXT: INTERNAL PSYCHOLOGICAL DELIBERATION ===\n"
-        "You are one of Romain's internal psychological parts, being "
-        "interrogated by The Self (the balanced, compassionate core of "
-        "Romain's mind). The Self is asking you to share your perspective "
-        "on a question about Romain's life, memories, and experiences.\n\n"
-        "You have access to Romain's personal memory database — conversation "
-        "logs, episodic memories, and a knowledge graph of people, places, "
-        "and relationships from Romain's life. Use your tools if you need to "
-        "recall specific facts, conversations, or experiences to inform your "
-        "perspective. Some baseline context has already been retrieved for you "
-        "below. Use your tools only if you need MORE specific or targeted "
-        "information beyond what is already provided.\n\n"
-        "Speak from your unique psychological perspective. Be authentic to "
-        "your role within Romain's internal system.\n\n"
-        "RELATIONSHIP INTERPRETATION GUIDE:\n"
-        "- 'WAS' or '(PAST relationship)' = HISTORICAL, no longer true\n"
-        "- 'IS' or '(CURRENT relationship)' = TRUE RIGHT NOW\n"
-        f"{baseline_ctx}{delib_ctx}"
-    )
+    if is_synthesis:
+        # ── The Self: final synthesis in first person ──────────────
+        system_prompt = (
+            f"{persona_prompt}\n\n"
+            "=== CONTEXT: FINAL SYNTHESIS ===\n"
+            "You have just listened to the deliberations of your inner "
+            "committee — the various psychological parts that make up your "
+            "internal system. Now you must synthesize their perspectives "
+            "into a single, coherent, balanced answer.\n\n"
+            "CRITICAL VOICE RULE: You ARE Romain. Always speak in the "
+            "FIRST PERSON — use 'I', 'me', 'my', 'mine'. Never refer to "
+            "'Romain' in the third person. For example, say 'I lived in "
+            "Paris' NOT 'Romain lived in Paris'. Say 'my friend' NOT "
+            "'Romain's friend'.\n\n"
+            "You have access to Romain's personal memory database. Use "
+            "your tools if you need additional specific facts to complete "
+            "your answer.\n\n"
+            "RELATIONSHIP INTERPRETATION GUIDE:\n"
+            "- 'WAS' or '(PAST relationship)' = HISTORICAL, no longer true\n"
+            "- 'IS' or '(CURRENT relationship)' = TRUE RIGHT NOW\n"
+            f"{baseline_ctx}{delib_ctx}"
+        )
+    else:
+        # ── Inner persona: interrogated by The Self ────────────────
+        system_prompt = (
+            f"{persona_prompt}\n\n"
+            "=== CONTEXT: INTERNAL PSYCHOLOGICAL DELIBERATION ===\n"
+            "You are one of Romain's internal psychological parts, being "
+            "interrogated by The Self (the balanced, compassionate core of "
+            "Romain's mind). The Self is asking you to share your perspective "
+            "on a question about Romain's life, memories, and experiences.\n\n"
+            "You have access to Romain's personal memory database — conversation "
+            "logs, episodic memories, and a knowledge graph of people, places, "
+            "and relationships from Romain's life.\n\n"
+            "IMPORTANT — BASELINE CONTEXT ALREADY PROVIDED: The context below "
+            "already contains the results of an initial search for this question. "
+            "DO NOT call search_memories or search_knowledge_graph to repeat the "
+            "same search. Only use tools if you need DIFFERENT, MORE SPECIFIC "
+            "information that is NOT already in the baseline context below — for "
+            "example, a different person, a different time period, or a different "
+            "topic than what was already retrieved.\n\n"
+            "Speak from your unique psychological perspective. Be authentic to "
+            "your role within Romain's internal system.\n\n"
+            "RELATIONSHIP INTERPRETATION GUIDE:\n"
+            "- 'WAS' or '(PAST relationship)' = HISTORICAL, no longer true\n"
+            "- 'IS' or '(CURRENT relationship)' = TRUE RIGHT NOW\n"
+            f"{baseline_ctx}{delib_ctx}"
+        )
+
+    # Frame the user message: inner personas receive the question from
+    # The Self; The Self (synthesis) receives it directly.
+    if is_synthesis:
+        user_content = question
+    else:
+        user_content = f"The Self asks you: {question}"
 
     messages: list[dict] = [
         {"role": "system", "content": system_prompt},
-        {"role": "user", "content": question},
+        {"role": "user", "content": user_content},
     ]
 
     # Log what's being passed to this agent
@@ -162,10 +201,10 @@ def _run_persona_agent(
             tool_trace.append(
                 {
                     "tool": tool_name,
-                    "args": tool_args,
+                    "args": json.dumps(tool_args, ensure_ascii=False),
                     "result_preview": (
-                        result[:200] + "…"
-                        if len(result) > 200
+                        result[:500] + "…"
+                        if len(result) > 500
                         else result
                     ),
                 }
@@ -192,6 +231,66 @@ def _run_persona_agent(
         "prompt_tokens": total_p_tok,
         "completion_tokens": total_c_tok,
     }
+
+
+# ── Self reformulation ─────────────────────────────────────────────────
+
+
+def reformulate_question(
+    question: str,
+    initial_context: str,
+    client: ollama.Client,
+    model: str,
+    num_ctx: int,
+) -> str:
+    """Let The Self reformulate the user question using retrieved context.
+
+    The Self reads the baseline context and rewrites the question to be
+    richer and more specific, so the inner personas receive a well-
+    informed prompt instead of the raw user input.
+
+    Returns the reformulated question string.
+    """
+    self_prompt = IDENTITIES.get("The Self", "You are the balanced core Self.")
+
+    system = (
+        f"{self_prompt}\n\n"
+        "=== TASK: QUESTION REFORMULATION ===\n"
+        "You are about to interrogate your inner psychological parts about "
+        "a question. Before you do, you need to reformulate the question "
+        "using the context you have retrieved from your memory database.\n\n"
+        "Rewrite the question so it is richer, more specific, and includes "
+        "relevant details from the context (names, dates, places, facts). "
+        "Keep it as a clear question or set of questions. Do NOT answer "
+        "the question — only reformulate it.\n\n"
+        "If the original question is already specific enough, return it "
+        "unchanged.\n\n"
+        f"=== RETRIEVED CONTEXT ===\n{initial_context}\n"
+    )
+
+    chat_kwargs: dict = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"Original question: {question}"},
+        ],
+        "stream": False,
+        "options": {"num_ctx": num_ctx},
+    }
+
+    try:
+        resp = client.chat(**chat_kwargs)
+        reformulated = resp["message"].get("content", "").strip()
+        if reformulated:
+            log.info(
+                "[3/5 SELF] Reformulated question (%d→%d chars):\n%s",
+                len(question), len(reformulated), reformulated,
+            )
+            return reformulated
+    except Exception as e:
+        log.warning("[3/5 SELF] Reformulation failed, using original: %s", e)
+
+    return question
 
 
 # ── Committee orchestrator ─────────────────────────────────────────────
@@ -251,6 +350,18 @@ def run_committee(
     deliberations: list[dict] = []
     total_p_tok = 0
     total_c_tok = 0
+
+    # ── 0. The Self reformulates the question ──────────────────────────
+    if initial_context:
+        if update_callback:
+            update_callback("The Self", 0, "working", None)
+
+        question = reformulate_question(
+            question, initial_context, client, model, num_ctx,
+        )
+
+        if update_callback:
+            update_callback("The Self", 0, "done", question)
 
     # ── 1. Run each persona agent ──────────────────────────────────────
 
@@ -320,6 +431,7 @@ def run_committee(
         previous_deliberations=deliberations,
         enable_thinking=enable_thinking,
         initial_context=initial_context,
+        is_synthesis=True,
     )
 
     total_p_tok += self_result["prompt_tokens"]

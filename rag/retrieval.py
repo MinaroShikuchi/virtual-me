@@ -69,7 +69,7 @@ Return ONLY the JSON. No markdown formatting.
         intent["people"] = [p.title() for p in intent.get("people", [])]
         
         log.info(
-            "[1/5 INTENT] people=%s  locations=%s  time=%s  type=%s",
+            "[ANALYSIS] people=%s  locations=%s  time=%s  type=%s",
             intent.get("people", []),
             intent.get("locations", []),
             intent.get("time_periods", []),
