@@ -12,6 +12,11 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
     st.caption("Query ChromaDB directly to inspect retrieved documents — **no LLM call**. "
                "All filters are passed directly as ChromaDB metadata `where` clauses.")
 
+    # Initialize state
+    if "rag_results" not in st.session_state:
+        st.session_state.rag_results = {"docs": [], "episodes": [], "intent": {}}
+
+
     # ── Top row: query + friend dropdown ──
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -41,30 +46,7 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
         st.info("Enter a query above to inspect retrieved documents.")
         return
 
-    # ── Build base filter (conversation ID) ──
-    base_filter = None
-    strategy    = "Semantic"
-    friend_name = None
-
-    if selected_friend != "All conversations":
-        matched_id = name_to_id.get(selected_friend.lower())
-        if matched_id:
-            base_filter = {"conversation": matched_id}
-            strategy    = "Strict (Conversation)"
-            friend_name = selected_friend
-    else:
-        intent = analyze_intent(query, intent_model, ollama_host, name_to_id)
-        if intent.get("people"):
-            # Same logic as Chat tab
-            for p in intent["people"]:
-                matched_id = name_to_id.get(p.lower())
-                if matched_id:
-                    base_filter = {"conversation": matched_id}
-                    strategy = "Strict (Conversation)"
-                    friend_name = p
-                    break
-
-    # ── Build extra metadata filters ──
+    # ── Extra metadata filters ──
     metadata_filters: dict = {}
     if source_sel != "Any source":
         metadata_filters["source"] = source_sel
@@ -75,29 +57,60 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
     if min_msgs > 1:
         metadata_filters["min_messages"] = int(min_msgs)
 
-    # Show the actual where clause being sent to ChromaDB
-    final_where = build_where(base_filter, metadata_filters)
-    with st.expander("ChromaDB `where` clause (debug)", expanded=False, icon=":material/data_object:"):
-        st.json(final_where if final_where else {"note": "no filter — full collection search"})
+    if st.button("Run Retrieval Analysis", icon=":material/search:"):
+        with st.spinner("Querying retrieval pipeline…"):
+            docs, episodes, intent = retrieve(
+                query, n_results,
+                collection, episodic, id_to_name, name_to_id,
+                intent_model, ollama_host,
+                metadata_filters=metadata_filters,
+                top_k=top_k,
+                relevance_threshold=-2.0,
+                do_rerank=do_rerank,
+                hybrid=hybrid,
+            )
+            st.session_state.rag_results = {
+                "docs": docs,
+                "episodes": episodes,
+                "intent": intent
+            }
 
-    with st.spinner("Querying ChromaDB…"):
-        docs, episodes, intent = retrieve(
-            query, n_results,
-            collection, episodic, id_to_name, name_to_id,
-            intent_model, ollama_host,
-            metadata_filters=metadata_filters,
-            top_k=top_k,
-            do_rerank=do_rerank,
-            hybrid=hybrid,
-        )
+    # Retrieve from session state for rendering
+    docs     = st.session_state.rag_results["docs"]
+    episodes = st.session_state.rag_results["episodes"]
+    intent   = st.session_state.rag_results["intent"]
+
+    if not docs and not episodes:
+        return
 
     # ── Summary metrics ──
     m1, m2, m3, m4, m5 = st.columns(5)
     m1.metric("Documents retrieved", len(docs))
+    
+    # Determine strategy from intent
+    strategy = "Semantic"
+    friend_name = None
+    if intent.get("people"):
+        strategy = "Strict (Conversation)"
+        friend_name = intent["people"][0]
+        
     m2.metric("Strategy", strategy)
     m3.metric("Matched friend", friend_name.title() if friend_name else "—")
-    m4.metric("Active filters", len(metadata_filters) + (1 if base_filter else 0))
+    m4.metric("Active filters", len(metadata_filters) + (1 if intent.get("people") else 0))
     m5.metric("Mode", ("Hybrid" if hybrid else "Semantic") + ("+Rerank" if do_rerank else ""))
+
+    # Show the actual where clause being sent to ChromaDB
+    base_filter = None
+    if intent.get("people"):
+        matched_id = name_to_id.get(intent["people"][0].lower())
+        if matched_id:
+            base_filter = {"conversation": matched_id}
+    
+    final_where = build_where(base_filter, metadata_filters)
+    with st.expander("ChromaDB `where` clause (debug)", expanded=False, icon=":material/data_object:"):
+        st.json(final_where if final_where else {"note": "no filter — full collection search"})
+    
+    st.caption(f"**Search Keywords:** `{intent.get('search_query', query)}`")
 
     st.divider()
 
@@ -132,7 +145,7 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
             badge_str = "  " + "  ".join(badges) if badges else ""
 
             with st.expander(
-                f"**{i}.**{badge_str} [{doc['date'][:10]}] {doc['friend']} — {doc['message_count']} msg(s){src_badge}",
+                f"**{i}.**{badge_str} [{doc['date'][:10]}] {doc['friend']} — {doc.get('message_count', 0)} msg(s){src_badge}",
                 expanded=(i <= 3),
             ):
                 score_line = ""
@@ -153,7 +166,7 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
                     f'<div class="rag-card-header">'
                     f'<span class="material-symbols-outlined" style="font-size:14px;vertical-align:middle">calendar_today</span> <span>{doc["date"]}</span> &nbsp;|&nbsp; '
                     f'<span>{doc["friend"]}</span> &nbsp;|&nbsp; '
-                    f'<span>{doc["message_count"]} messages</span> &nbsp;|&nbsp; '
+                    f'<span>{doc.get("message_count", 0)} messages</span> &nbsp;|&nbsp; '
                     f'<span>{doc.get("source", "—")}</span>'
                     f'</div>'
                     f'<pre style="white-space:pre-wrap;color:#e2e8f0;font-size:0.82rem">{doc["content"]}</pre>'

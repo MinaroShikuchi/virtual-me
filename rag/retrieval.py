@@ -38,13 +38,15 @@ def analyze_intent(question: str, model: str, host: str, name_to_id: dict) -> di
     prompt = f"""
 You are an intent router for a personal history database.
 Perform semantic analysis on the user query and extract exactly the people, places, and timeframes mentioned.
+Also, transform the natural language question into a keyword-heavy search query (search_query) that removes conversational filler and focuses only on core entities, actions, and topics to optimize retrieval from a vector and keyword database.
 
 Only output valid JSON matching this schema:
 {{
   "people": [list of person names extracted from the query],
   "locations": [list of places/locations extracted],
   "time_periods": [list of dates/years/time expressions],
-  "query_type": "factual" | "emotional" | "exploratory"
+  "query_type": "factual" | "emotional" | "exploratory",
+  "search_query": "optimized keyword string for search engines"
 }}
 
 User query: {question}
@@ -53,8 +55,8 @@ Return ONLY the JSON. No markdown formatting.
     """.strip()
     
     try:
-        print(f"\n{'='*50}\n[DEBUG: INPUT TO INTENT ROUTER ({model})]\n{'='*50}")
-        print(f"PROMPT:\n{prompt}\n{'='*50}\n")
+        # print(f"\n{'='*50}\n[DEBUG: INPUT TO INTENT ROUTER ({model})]\n{'='*50}")
+        # print(f"PROMPT:\n{prompt}\n{'='*50}\n")
         
         client = ollama.Client(host=host)
         res = client.chat(
@@ -196,6 +198,7 @@ def retrieve(question: str, n_results: int,
              model: str, ollama_host: str,
              metadata_filters: dict | None = None,
              top_k: int = 10,
+             relevance_threshold: float = 0.0,
              do_rerank: bool = True,
              hybrid: bool = True):
     """
@@ -214,101 +217,118 @@ def retrieve(question: str, n_results: int,
     if metadata_filters is None:
         metadata_filters = {}
 
-    intent = analyze_intent(question, model, ollama_host, name_to_id)
-    strategy = "Exploratory"
-    base_filter = None
-    friend_name = None
+    print(f"\n[RETRIEVE] Query: '{question}'")
 
+    # 1. Intent Analysis
+    intent = analyze_intent(question, model, ollama_host, name_to_id)
+    
+    search_query = intent.get("search_query", "")
+    if not search_query or not search_query.strip():
+        search_query = question
+        
+    print(f"  -> Optimized Search Query: '{search_query}'")
+    
+    base_filter = None
     if intent.get("people"):
-        # We just pick the first person identified to build a strict conversation filter if it exists
-        # Alternatively we could do a global mention, let's keep it simple and filter by the first known friend
+        print(f"  -> Intent: Detected people {intent['people']}")
         for p in intent["people"]:
             matched_id = name_to_id.get(p.lower())
             if matched_id:
                 base_filter = {"conversation": matched_id}
-                strategy = "Strict (Conversation)"
-                friend_name = p
+                print(f"  -> Filter: Locking to conversation with {p} ({matched_id})")
                 break
 
     where = build_where(base_filter, metadata_filters)
+    print(f"  -> Chroma 'where' clause: {where}")
 
-    # Episodic memory
+    # 2. Episodic Retrieval
     if episodic:
         try:
-            ep = episodic.query(query_texts=[question], n_results=5)
+            ep = episodic.query(query_texts=[search_query], n_results=3)
             if ep["documents"] and ep["documents"][0]:
+                print(f"  -> Episodic: Found {len(ep['documents'][0])} episodes")
                 for d, m in zip(ep["documents"][0], ep["metadatas"][0]):
-                    emotion = m.get("emotion", "")
-                    label = f"{d}{' (' + emotion + ')' if emotion and emotion != 'neutral' else ''}"
-                    episodes.append({"date": m.get("date", ""), "content": label})
-        except Exception:
-            pass
+                    episodes.append({"date": m.get("date", ""), "content": d, "emotion": m.get("emotion", "neutral")})
+        except Exception as e:
+            print(f"  !! Episodic Error: {e}")
 
-    # Main memory
+    # 3. Main Memory Retrieval
     try:
-        # ── Step 1a: Semantic (vector) search ──
+        # Step 1a: Semantic Search
         semantic_docs = []
-        raw = collection.query(
-            query_texts=[question],
-            n_results=n_results,
-            where=where,
-        )
-        if raw["documents"] and raw["documents"][0]:
-            for d, m in zip(raw["documents"][0], raw["metadatas"][0]):
+        raw_semantic = collection.query(query_texts=[search_query], n_results=n_results, where=where)
+        
+        if raw_semantic["documents"] and raw_semantic["documents"][0]:
+            print(f"  -> Semantic: Chroma returned {len(raw_semantic['documents'][0])} candidates")
+            for d, m in zip(raw_semantic["documents"][0], raw_semantic["metadatas"][0]):
                 conv_id = m.get("conversation", "")
                 semantic_docs.append({
-                    "date":            m.get("date", ""),
-                    "conversation_id": conv_id,
-                    "friend":          id_to_name.get(conv_id, conv_id),
+                    "content": d,
+                    "date": m.get("date", ""),
+                    "friend": id_to_name.get(conv_id, conv_id),
+                    "importance": m.get("importance", 1),
                     "message_count":   m.get("message_count", 1),
                     "source":          m.get("source", ""),
-                    "rerank_score":    None,
-                    "rrf_score":       None,
-                    "semantic_rank":   None,
-                    "bm25_rank":       None,
-                    "bm25_score":      None,
-                    "content":         d,
+                    "conversation_id": conv_id,
+                    "type":            "semantic"
                 })
 
+        # Step 1b: Hybrid Logic
         if hybrid:
-            # ── Step 1b: BM25 keyword search over full corpus ──
             bm25, corpus_docs = load_bm25_corpus(collection)
-            kw_docs = keyword_search(question, bm25, corpus_docs, n_results, id_to_name)
-
-            # Post-filter BM25 results by metadata (BM25 doesn't know about metadata)
-            if metadata_filters:
-                def _passes(doc):
-                    if metadata_filters.get("source") and doc.get("source") != metadata_filters["source"]:
-                        return False
-                    if metadata_filters.get("date_from") and doc["date"] < metadata_filters["date_from"]:
-                        return False
-                    if metadata_filters.get("date_to") and doc["date"] > metadata_filters["date_to"]:
-                        return False
-                    if metadata_filters.get("min_messages", 1) > 1 and doc["message_count"] < metadata_filters["min_messages"]:
-                        return False
-                    return True
-                kw_docs = [d for d in kw_docs if _passes(d)]
-
-            # ── Step 2: Reciprocal Rank Fusion ──
-            docs = rrf_merge(semantic_docs, kw_docs)
+            kw_candidates = keyword_search(search_query, bm25, corpus_docs, n_results * 2, id_to_name)
+            print(f"  -> BM25: Raw keyword search found {len(kw_candidates)} candidates")
+            
+            # Apply metadata filters to BM25 results manually
+            kw_docs = []
+            for d in kw_candidates:
+                if _manual_filter(d, metadata_filters, log=True):
+                    kw_docs.append(d)
+            
+            print(f"  -> BM25: {len(kw_docs)} survived metadata filters")
+            
+            # Step 2: RRF Merge
+            docs = rrf_merge(semantic_docs, kw_docs[:n_results])
+            print(f"  -> RRF: Merged pool size: {len(docs)}")
         else:
             docs = semantic_docs
 
-        # ── Step 3: Cross-encoder rerank ──
+        # Step 3: Reranking
         if do_rerank and docs:
-            docs = rerank(question, docs, top_k)
+            print(f"  -> Rerank: Scoring {len(docs)} documents...")
+            ranked_docs = rerank(search_query, docs, len(docs)) # Get all scores
+            
+            # Filter by relevance threshold
+            docs = [d for d in ranked_docs if d.get('rerank_score', -99) >= relevance_threshold]
+            
+            dropped = len(ranked_docs) - len(docs)
+            if dropped > 0:
+                print(f"  -> Filter: Discarded {dropped} docs below threshold ({relevance_threshold})")
+            
+            # Limit to top_k after filtering
+            docs = docs[:top_k]
+
+            for i, d in enumerate(docs[:3]):
+                print(f"     Top {i+1} Score: {d.get('rerank_score'):.4f} | Date: {d.get('date')}")
         else:
             docs = docs[:top_k]
 
-        # Override: Keep ONLY the top 3 BM25 docs if we are in hybrid mode
-        if hybrid:
-            top_bm25 = [d for d in docs if d.get("bm25_rank") in (1, 2, 3)]
-            # If they were lost in the rerank/RRF, fish them directly out of kw_docs
-            if len(top_bm25) < 3:
-                top_bm25 = sorted(kw_docs, key=lambda d: d.get("bm25_rank", 999))[:3]
-            docs = top_bm25
-
     except Exception as e:
-        st.error(f"Retrieval error: {e}")
+        print(f"  !! Retrieval Error: {e}")
 
+    print(f"[RETRIEVE] Completed. Returning {len(docs)} docs and {len(episodes)} episodes.\n")
     return docs, episodes, intent
+    
+def _manual_filter(doc, filters, log=False):
+    """Helper with optional logging for filter rejections."""
+    if not filters: return True
+    
+    if filters.get("source") and doc.get("source") != filters["source"]:
+        return False
+    
+    # Example for date filtering
+    if filters.get("date_from") and doc.get("date", "") < filters["date_from"]:
+        if log: print(f"     (Dropped BM25 doc from {doc.get('date')} - too old)")
+        return False
+
+    return True

@@ -118,7 +118,7 @@ def main():
             st.Page(ingest_page,       title="Vector",       url_path="vector",       icon=":material/database:"),
             st.Page(graph_page,        title="Node Extract", url_path="graph",        icon=":material/manufacturing:"),
             st.Page(rag_explorer_page, title="RAG Explorer", url_path="rag",          icon=":material/search:"),
-            st.Page(entity_browser_page, title="Entity Browser", url_path="browser",  icon=":material/travel_explore:"),
+            st.Page(entity_browser_page, title="Graph Explorer", url_path="browser",  icon=":material/travel_explore:"),
         ]
     )
 

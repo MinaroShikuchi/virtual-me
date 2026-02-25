@@ -119,12 +119,24 @@ PLATFORMS = [
         "logo_url": "https://upload.wikimedia.org/wikipedia/commons/c/c1/Google_%22G%22_logo.svg",
         "extractors": [
             {
-                "label": "Location History",
+                "label": "Location History / Timeline",
                 "script": "tools/extractors/google_timeline.py",
-                "args": lambda cfg: ["--records", cfg.get("records", "Records.json"), "--self-name", cfg.get("self_name", SELF_NAME)],
-                "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Records.json", type=["json"], key="gl_up")},
+                "args": lambda cfg: ["--records", cfg.get("records", "data/google/Timeline.json"), "--self-name", cfg.get("self_name", SELF_NAME)],
+                "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Timeline.json or Records.json", type=["json"], key="gl_up")},
                 "entities": ["Person", "Place"],
                 "relationships": ["VISITED", "LIVES_IN"],
+            },
+            {
+                "label": "Calendar Events (.ics)",
+                "script": "tools/extractors/gcal.py",
+                "args": lambda cfg: (
+                    ["--data-dir", cfg["data_dir"], "--self-name", cfg.get("self_name", SELF_NAME)]
+                    if "data_dir" in cfg else 
+                    ["--data-dir", "data/google", "--self-name", cfg.get("self_name", SELF_NAME)]
+                ),
+                "extra_fields": lambda: {"uploaded_files": st.file_uploader("Upload Calendar .ics files", type=["ics"], key="gcal_up", accept_multiple_files=True)},
+                "entities": ["Person", "Event", "Place"],
+                "relationships": ["ATTENDED", "LOCATED_AT"],
             }
         ]
     },

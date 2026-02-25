@@ -18,10 +18,14 @@ def _render_token_bar(prompt_tok: int, comp_tok: int, max_ctx: int):
 
 def render_chat_tab(collection, episodic, id_to_name, name_to_id,
                     model, intent_model, ollama_host, num_ctx, deliberation_rounds, active_personas, enable_thinking, system_prompt, n_results, top_k, do_rerank, hybrid):
-    st.markdown("### :material/chat: Chat with your memories")
+    
+    ctx_kb = f"{num_ctx/1024:.0f}k" if num_ctx >= 1024 else f"{num_ctx}"
+    st.markdown(f"### :material/chat: Chat with your memories")
     
     if active_personas and deliberation_rounds > 0:
+        st.caption(f"**Intent Model:** {intent_model} · **Model:** {model} ({ctx_kb}) · **Number of Results:** {n_results} · **Top K:** {top_k} · **Do Rerank:** {do_rerank} · **Hybrid:** {hybrid}")
         st.caption(f"**Committee Active:** {', '.join(active_personas)} ({deliberation_rounds} rounds)")
+        # st.caption(f"**System Prompt:** {system_prompt}")
     if "messages" not in st.session_state:
         st.session_state.messages = []
 
@@ -62,21 +66,27 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
         with st.chat_message("assistant"):
             filter_info = ""
 
+            with st.spinner("Translating query to introspective thought..."):
+                from rag.llm import translate_to_introspective
+                prompt = translate_to_introspective(prompt, intent_model, ollama_host)
+                st.caption(f"*Introspective Query: {prompt}*")
+
             with st.spinner("Analyzing intent and retrieving memories…"):
                 docs, episodes, intent = retrieve(
                     prompt, n_results,
                     collection, episodic, id_to_name, name_to_id,
                     intent_model, ollama_host,
                     metadata_filters=None,
+                    relevance_threshold=-2.0,
                     top_k=top_k, do_rerank=do_rerank, hybrid=hybrid,
                 )
                 
                 # Fetch semantic facts from Neo4j based on intent
                 facts = retrieve_facts(intent)
                 
-            with st.spinner("Purifying context..."):
-                from rag.llm import filter_irrelevant_context
-                docs = filter_irrelevant_context(prompt, docs, intent_model, ollama_host)
+            # with st.spinner("Purifying context..."):
+            #     from rag.llm import filter_irrelevant_context
+            #     docs = filter_irrelevant_context(prompt, docs, intent_model, ollama_host)
 
             if not docs and not episodes and not facts:
                 st.warning("No relevant memories found.")

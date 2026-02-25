@@ -171,9 +171,9 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
                     <div style="font-weight:700;font-size:1rem;color:#f1f5f9;margin-bottom:4px">{src['label']}</div>
                     <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:12px">{src['description']}</div>
                     <div style="font-size:1.6rem;font-weight:800;color:{src['color']};letter-spacing:-0.5px">
-                        ~{src['approx_total']:,}
+                        {ingested:,}
                     </div>
-                    <div style="font-size:0.72rem;color:#64748b;margin-bottom:10px">{src['stat_label']}</div>
+                    <div style="font-size:0.72rem;color:#64748b;margin-bottom:10px">Ingested {src['stat_label']}</div>
                     <div style="
                         display:inline-block;
                         background:{status_color}22;

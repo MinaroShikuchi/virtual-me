@@ -10,6 +10,7 @@ of truth.
 ENTITY_LABELS: list[str] = [
     "Person", "Place", "Song", "Artist", "Company",
     "Game", "Activity", "Interest", "School", "Device",
+    "Visit", "Trip", "Event",
 ]
 
 # ── Relationship types ────────────────────────────────────────────────────────
@@ -18,6 +19,9 @@ REL_TYPES: list[str] = [
     "LIVES_IN", "VISITED", "TRAVELLED_TO",
     "WORKS_AT", "LISTENED_TO", "INTERESTED_IN",
     "KNOWS", "STUDIED_AT", "USED_DEVICE",
+    "ATTENDED", "LOCATED_AT",
+    "TOOK_TRIP", "STARTED_AT", "ENDED_AT",
+    "PERFORMED",
 ]
 
 # ── Entity colour palette (hex) ──────────────────────────────────────────────
@@ -32,6 +36,9 @@ LABEL_COLORS: dict[str, str] = {
     "Interest": "#f97316",
     "School":   "#a855f7",
     "Device":   "#64748b",
+    "Visit":    "#f43f5e",
+    "Trip":     "#fbbf24",
+    "Event":    "#8b5cf6",
 }
 
 # ── Relationship → Material Symbols icon name ────────────────────────────────
@@ -50,6 +57,12 @@ REL_ICONS: dict[str, str] = {
     "KNOWS":         "person_add",
     "STUDIED_AT":    "school",
     "USED_DEVICE":   "devices",
+    "ATTENDED":      "event",
+    "LOCATED_AT":    "location_on",
+    "TOOK_TRIP":     "directions_transit",
+    "STARTED_AT":    "trip_origin",
+    "ENDED_AT":      "mode_of_travel",
+    "PERFORMED":     "directions_run",
 }
 
 # ── Interest keyword taxonomy (used by facebook_messages extractor) ───────────

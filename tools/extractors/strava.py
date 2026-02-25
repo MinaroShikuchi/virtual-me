@@ -1,3 +1,4 @@
+
 #!/usr/bin/env python3
 """
 tools/extractors/strava.py
@@ -103,12 +104,35 @@ def _parse_int(val: str, default: int = 0) -> int:
         return default
 
 
+def _parse_date(date_str: str) -> str:
+    """Safely parse various date strings into ISO-8601 format."""
+    if not date_str:
+        return "1970-01-01T00:00:00"
+    
+    # Try ISO
+    try:
+        from datetime import datetime
+        if "Z" in date_str:
+            date_str = date_str.replace("Z", "+00:00")
+        return datetime.fromisoformat(date_str).isoformat()
+    except ValueError:
+        pass
+    
+    # Try Strava CSV format: Jun 3, 2018, 7:00:34 PM
+    try:
+        from datetime import datetime
+        return datetime.strptime(date_str, "%b %d, %Y, %I:%M:%S %p").isoformat()
+    except ValueError:
+        pass
+        
+    return "1970-01-01T00:00:00"
+
+
 # ── CSV loading ───────────────────────────────────────────────────────────────
 
 def load_csv(csv_path: str | Path, limit: int = 0) -> list[dict]:
     """
-    Load Strava activities.csv and return a list of normalised activity dicts.
-    Only keeps the fields we care about: date, type, elapsed_time, distance.
+    Load Strava activities.csv and return a list of activity dicts.
     """
     activities = []
     csv_path = Path(csv_path)
@@ -120,10 +144,14 @@ def load_csv(csv_path: str | Path, limit: int = 0) -> list[dict]:
         reader = csv.DictReader(f)
         for row in reader:
             activities.append({
+                "id":           row.get("Activity ID", ""),
+                "name":         row.get("Activity Name", ""),
                 "type":         row.get("Activity Type", "Unknown"),
                 "start_date":   row.get("Activity Date", ""),
                 "elapsed_time": _parse_int(row.get("Elapsed Time", "0")),
                 "distance":     _parse_float(row.get("Distance", "0")),
+                "avg_hr":       _parse_float(row.get("Average Heart Rate", "0")),
+                "calories":     _parse_float(row.get("Calories", "0"))
             })
             if limit and len(activities) >= limit:
                 break
@@ -163,70 +191,99 @@ def extract(activities: list[dict], self_name: str,
             dry_run: bool = False, client=None) -> dict:
     """
     Extract triples from a list of Strava activity dicts.
-
-    Creates one Activity node per activity type with aggregate stats:
-      - total_distance_km
-      - total_elapsed_hours
-      - activity_count
     """
     triples = []
     counters: Counter = Counter()
 
-    # Aggregate stats per activity type
-    type_stats: dict[str, dict] = defaultdict(lambda: {
-        "count": 0, "total_distance": 0.0, "total_elapsed": 0,
-    })
-
     for i, act in enumerate(activities):
+        act_id = str(act.get("id", act.get("Activity ID", "")))
+        if not act_id:
+            act_id = f"unknown_{i}"
+        
+        full_id = f"strava_{act_id}"
+        
+        act_name = act.get("name", act.get("Activity Name", "Strava Activity"))
         act_type = act.get("type", "Unknown")
-        interest = _normalise_type(act_type)
-        distance = _parse_float(str(act.get("distance", 0)))
-        elapsed  = _parse_int(str(act.get("elapsed_time", 0)))
+        
+        start_date = act.get("start_date", act.get("start_date_local", ""))
+        iso_date = _parse_date(start_date)
+        
+        elapsed = _parse_int(str(act.get("elapsed_time", "0")))
+        dist = _parse_float(str(act.get("distance", "0")))
+        avg_hr = _parse_float(str(act.get("avg_hr", act.get("average_heartrate", "0"))))
+        cals = _parse_float(str(act.get("calories", act.get("Calories", "0"))))
 
-        type_stats[interest]["count"] += 1
-        type_stats[interest]["total_distance"] += distance
-        type_stats[interest]["total_elapsed"] += elapsed
+        # 1. Person -> PERFORMED -> Activity
+        triples.append({
+            "from_label": "Person",   "from_name": self_name,
+            "rel_type":   "PERFORMED",
+            "to_label":   "Activity", "to_name": full_id,
+            "props": {
+                "id": full_id,
+                "type": act_type,
+                "start": iso_date,
+                "duration_sec": elapsed,
+                "distance_m": dist,
+                "avg_hr": avg_hr,
+                "calories": cals,
+                "source": "strava",
+            },
+        })
+        counters["PERFORMED"] += 1
+        
+        # 2. Activity -> LOCATED_AT -> Place (using the route name)
+        route_name = act_name if act_name else f"{act_type} Route"
+        triples.append({
+            "from_label": "Activity", "from_name": full_id,
+            "rel_type":   "LOCATED_AT",
+            "to_label":   "Place",  "to_name": route_name,
+            "props": {
+                "name": route_name
+            }
+        })
+        counters["LOCATED_AT"] += 1
+        
+        print(f"[REL] {self_name!r} --PERFORMED--> {full_id!r} [{act_type} {dist:.0f}m]", flush=True)
 
-        if (i + 1) % 200 == 0 or (i + 1) == len(activities):
+        if (i + 1) % 500 == 0 or (i + 1) == len(activities):
             pct = int((i + 1) / len(activities) * 100)
             print(f"PROGRESS: {pct}% | {i+1}/{len(activities)}", flush=True)
 
-    # Build triples from aggregated stats
-    for interest, stats in sorted(type_stats.items()):
-        distance_km = round(stats["total_distance"] / 1000, 1)
-        elapsed_hrs = round(stats["total_elapsed"] / 3600, 1)
-
-        triples.append({
-            "from_label": "Person",   "from_name": self_name,
-            "rel_type":   "INTERESTED_IN",
-            "to_label":   "Activity", "to_name": interest,
-            "props": {
-                "activity_count":      stats["count"],
-                "total_distance_km":   distance_km,
-                "total_elapsed_hours": elapsed_hrs,
-                "source":              "strava",
-            },
-        })
-        counters["INTERESTED_IN"] += 1
-        print(
-            f"[ACT] {interest!r}: {stats['count']} activities, "
-            f"{distance_km} km, {elapsed_hrs} hrs",
-            flush=True,
-        )
-
-    print(f"\n📊 Strava: {len(triples)} triples from {len(activities)} activities", flush=True)
-    for rel, cnt in sorted(counters.items()):
-        print(f"   {rel:20s} {cnt:>6,}", flush=True)
+    print(f"\n📊 Strava: {counters.get('PERFORMED', 0)} exact activities created.", flush=True)
 
     if dry_run:
-        for t in triples[:20]:
+        for t in triples[:10]:
             print(f"  [{t['from_label']}] {t['from_name']!r} "
                   f"--{t['rel_type']}--> [{t['to_label']}] {t['to_name']!r} "
                   f"  {t['props']}")
     elif client is not None:
         client.ensure_constraints()
-        client.batch_merge_relations(triples)
-        print("✅ Written to Neo4j.", flush=True)
+        print("✍️ Executing custom Cypher ingestion for Strava schema...", flush=True)
+        with client.driver.session() as s:
+            for t in triples:
+                if t["rel_type"] == "PERFORMED":
+                    p = t["props"]
+                    s.run(
+                        "MERGE (a:Person {name: $fn}) "
+                        "MERGE (act:Activity {id: $act_id}) "
+                        "ON CREATE SET act.name = $act_id, act.type = $type, act.start = datetime($st), "
+                        "act.duration_sec = $dur, act.distance_m = $dist, act.avg_hr = $hr, act.calories = $cal, act.source = $src "
+                        "ON MATCH SET act.name = $act_id, act.type = $type, act.start = datetime($st), "
+                        "act.duration_sec = $dur, act.distance_m = $dist, act.avg_hr = $hr, act.calories = $cal, act.source = $src "
+                        "MERGE (a)-[:PERFORMED]->(act)",
+                        fn=t["from_name"], act_id=p["id"],
+                        type=p["type"], st=p["start"], dur=p["duration_sec"],
+                        dist=p["distance_m"], hr=p["avg_hr"], cal=p["calories"], src=p["source"]
+                    )
+                elif t["rel_type"] == "LOCATED_AT":
+                    p = t["props"]
+                    s.run(
+                        "MERGE (act:Activity {id: $act_id}) "
+                        "MERGE (pl:Place {name: $pname}) "
+                        "MERGE (act)-[:LOCATED_AT]->(pl)",
+                        act_id=t["from_name"], pname=p["name"]
+                    )
+        print("✅ Written custom Strava schema to Neo4j.", flush=True)
 
     return dict(counters)
 

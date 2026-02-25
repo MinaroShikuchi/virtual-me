@@ -59,6 +59,41 @@ def _parse_llm_response(resp: dict):
     return thinking, answer, prompt_tok, comp_tok
 
 import json
+
+def translate_to_introspective(question: str, model: str, ollama_host: str) -> str:
+    """
+    Translates a 2nd-person query into a 1st-person introspective query.
+    E.g. "What do you know about Lois normand?" -> "What do I know about Lois normand?"
+    Returns the mapped string.
+    """
+    prompt = f"""
+You are a perspective translator. Rewrite the user's question from a 2nd-person external query into a 1st-person introspective internal thought.
+Change "you" to "I", "your" to "my", etc.
+Do not answer the question. ONLY return the translated text.
+
+Example:
+Input: What do you know about Lois normand?
+Output: What do I know about Lois normand?
+
+Input: Where did you travel last year?
+Output: Where did I travel last year?
+
+Input: {question}
+Output:
+""".strip()
+
+    client = ollama.Client(host=ollama_host)
+    try:
+        res = client.chat(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0}
+        )
+        return res["message"]["content"].strip()
+    except Exception as e:
+        print(f"Failed to translate query: {e}")
+        return question
+
 def filter_irrelevant_context(question: str, docs: list, model: str, ollama_host: str) -> list:
     """
     Passes each retrieved conversation chunk through a lightweight LLM to determine
@@ -74,6 +109,7 @@ def filter_irrelevant_context(question: str, docs: list, model: str, ollama_host
     print(f"\n{'='*50}\n[DEBUG: CONTEXT PURIFICATION ({model})]\n{'='*50}")
     
     for i, doc in enumerate(docs):
+        meta_str = f"[{doc.get('date', 'N/A')}] {doc.get('friend', 'N/A')}"
         prompt = f"""
 You are a context purificaton filter for a RAG system.
 Your job is to read a chunk of an old chat log and determine if it contains ANY relevant information that could help answer the user's question.
@@ -91,7 +127,7 @@ Return ONLY valid JSON matching this schema:
 """.strip()
 
         try:
-            print(f"\n[Doc {i+1} PROMPT]:\n{prompt}\n")
+            print(f"\n[Doc {i+1} ({meta_str}) PROMPT]:\n{prompt}\n")
             res = client.chat(
                 model=model,
                 messages=[{"role": "user", "content": prompt}],
@@ -104,7 +140,7 @@ Return ONLY valid JSON matching this schema:
             print(f"[Doc {i+1} OUTPUT]:\n{json.dumps(result, indent=2)}\n")
             
             is_relevant = result.get("is_relevant", True)
-            print(f"Doc {i+1} relevant: {is_relevant}")
+            print(f"Doc {i+1} ({meta_str}) relevant: {is_relevant}")
             
             if is_relevant:
                 filtered_docs.append(doc)
@@ -123,6 +159,8 @@ def call_llm(question: str, docs: list, episodes: list, facts: list,
     ctx = _build_context_string(docs, episodes, facts)
     full_system_prompt = (
         f"{system_prompt}\n\n"
+        f"CRITICAL PERSPECTIVE RULE:\n"
+        f"You are the core of our mind. When the context mentions 'Romain', it is talking about US/ME. We are Romain. Always refer to 'Romain' as 'me', 'us', 'we', or 'I'. Never refer to Romain in the third person.\n\n"
         f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
         f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
         f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -159,6 +197,8 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
     ctx = _build_context_string(docs, episodes, facts)
     client = ollama.Client(host=ollama_host)
     
+    print(f"\n[DELIBERATE] Starting committee with {len(docs)} docs, {len(episodes)} episodes, {len(facts)} facts.")
+    
     total_prompt_tok = 0
     total_comp_tok = 0
     deliberations = []
@@ -182,6 +222,8 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 f"{persona_sys_prompt}\n\n"
                 f"You are participating in an inner committee to help answer a question. "
                 f"Provide your perspective based on your psychological identity. Keep your answer focused.\n\n"
+                f"CRITICAL PERSPECTIVE RULE:\n"
+                f"You are inside our mind. When the retrieved context (conversations, facts, episodes) mentions 'Romain', it is talking about US. We are Romain. Always refer to 'Romain' as 'us', 'we', or 'I' (from the collective perspective of the system). Never refer to Romain in the third person.\n\n"
                 f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
                 f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
                 f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -201,8 +243,9 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
             }
             
             print(f"\n{'='*50}\n[DEBUG: INPUT TO {persona.upper()} (ROUND {r})]\n{'='*50}")
-            print(f"SYSTEM PROMPT:\n{full_system_prompt}")
-            print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n")
+            # print(f"SYSTEM PROMPT:\n{full_system_prompt}") # Redundant, context already logged
+            print(f"IDENTITY PROMPT:\n{persona_sys_prompt}")
+            # print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n")  # Redundant, logged already
             
             if enable_thinking:
                 chat_kwargs["think"] = True
@@ -239,6 +282,8 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         f"You have listened to the deliberations of your inner committee. "
         f"Now, synthesize a final, balanced, and coherent answer to the user's question, "
         f"taking into account the various perspectives but speaking with one unified voice.\n\n"
+        f"CRITICAL PERSPECTIVE RULE:\n"
+        f"You are the core of our mind. When the context or deliberations mention 'Romain', it is talking about US/ME. We are Romain. Always refer to 'Romain' as 'me', 'us', 'we', or 'I'. Never refer to Romain in the third person.\n\n"
         f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
         f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
         f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -258,8 +303,9 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
     }
     
     print(f"\n{'='*50}\n[DEBUG: INPUT TO THE SELF (FINAL SYNTHESIS)]\n{'='*50}")
-    print(f"SYSTEM PROMPT:\n{full_system_prompt}")
-    print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n")
+    # print(f"SYSTEM PROMPT:\n{full_system_prompt}") # Redundant
+    print(f"IDENTITY PROMPT:\n{synthesis_sys_prompt}")
+    # print(f"\nUSER QUESTION:\n{question}\n{'='*50}\n") # Redundant
     
     if enable_thinking:
         chat_kwargs["think"] = True
