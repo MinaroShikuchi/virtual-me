@@ -23,7 +23,7 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
     st.markdown(f"### :material/chat: Chat with your memories")
     
     if active_personas and deliberation_rounds > 0:
-        st.caption(f"**Intent Model:** {intent_model} · **Model:** {model} ({ctx_kb}) · **Number of Results:** {n_results} · **Top K:** {top_k} · **Do Rerank:** {do_rerank} · **Hybrid:** {hybrid}")
+        st.caption(f"**Intent Model:** {intent_model} · **Model:** {model} ({ctx_kb}) · **Hybrid:** {hybrid}")
         st.caption(f"**Committee Active:** {', '.join(active_personas)} ({deliberation_rounds} rounds)")
         # st.caption(f"**System Prompt:** {system_prompt}")
     if "messages" not in st.session_state:

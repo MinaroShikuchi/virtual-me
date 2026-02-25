@@ -281,7 +281,7 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
                     import plotly.graph_objects as go
                     color    = LABEL_COLORS.get(selected, "#6366f1")
                     # Exclude the self-identity node (e.g. "ME") from the chart
-                    self_name = st.session_state.get("kg_self_name", SELF_NAME)
+                    self_name = SELF_NAME
                     top_rows = client.top_nodes_by_degree(
                         selected, limit=10, exclude_names=[self_name, "ME"],
                     )
@@ -343,7 +343,7 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
 
             # ── Interest profile spider chart (from Neo4j) ──
             try:
-                self_name = st.session_state.get("kg_self_name", SELF_NAME)
+                self_name = SELF_NAME
                 interest_data = client.interest_profile(self_name=self_name)
                 if interest_data:
                     _render_interest_chart_from_data(interest_data)

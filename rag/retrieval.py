@@ -244,7 +244,7 @@ def retrieve(question: str, n_results: int,
     # 2. Episodic Retrieval
     if episodic:
         try:
-            ep = episodic.query(query_texts=[search_query], n_results=3)
+            ep = episodic.query(query_texts=[search_query], n_results=10)
             if ep["documents"] and ep["documents"][0]:
                 print(f"  -> Episodic: Found {len(ep['documents'][0])} episodes")
                 for d, m in zip(ep["documents"][0], ep["metadatas"][0]):

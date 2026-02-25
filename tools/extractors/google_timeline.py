@@ -38,53 +38,9 @@ def _grid_key(lat: float, lng: float, precision: float = 0.01) -> tuple:
             round(lng / precision) * precision)
 
 
-class Geocacher:
-    """Handles reverse geocoding with a local JSON cache and rate limiting."""
-    def __init__(self, cache_path: Path):
-        self.cache_path = cache_path
-        self.cache = {}
-        self.geocoder = None
-        if self.cache_path.exists():
-            try:
-                with open(self.cache_path, "r", encoding="utf-8") as f:
-                    self.cache = json.load(f)
-            except Exception as e:
-                print(f"⚠️ Failed to load geocache: {e}")
+from geo_utils import Geocacher, parse_address_hierarchy
 
-    def _init_geocoder(self):
-        if not self.geocoder:
-            from geopy.geocoders import Nominatim
-            self.geocoder = Nominatim(user_agent="virtual-me-travel-extractor")
 
-    def get_address(self, lat: float, lng: float) -> str:
-        key = f"{lat:.2f}_{lng:.2f}"
-        if key in self.cache:
-            return self.cache[key]
-
-        print(f"🌐 Geocoding {key} ...", flush=True)
-        self._init_geocoder()
-        import time
-        try:
-            # Nominatim usage policy asks for 1 req/sec
-            time.sleep(1.1)
-            location = self.geocoder.reverse((lat, lng), language="en")
-            if location and location.address:
-                addr = location.address
-                self.cache[key] = addr
-                self._save_cache()
-                return addr
-        except Exception as e:
-            print(f"⚠️ Geocoding failed for {key}: {e}")
-        
-        fallback = f"lat{lat:.2f}_lng{lng:.2f}"
-        return fallback
-
-    def _save_cache(self):
-        try:
-            with open(self.cache_path, "w", encoding="utf-8") as f:
-                json.dump(self.cache, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"⚠️ Failed to save geocache: {e}")
 
 
 def extract(data: dict | list, self_name: str, min_visits: int = 5,
@@ -232,6 +188,27 @@ def extract(data: dict | list, self_name: str, min_visits: int = 5,
             "props":      {"lat": home_key[0], "lng": home_key[1]},
         })
         counters["LIVES_IN"] += 1
+        
+        # Hierarchical Locations for Home
+        hierarchy = parse_address_hierarchy(home_addr)
+        if hierarchy.get("city"):
+            triples.append({
+                "from_label": "Place", "from_name": home_addr,
+                "rel_type":   "IN_CITY",
+                "to_label":   "City",  "to_name": hierarchy["city"],
+                "props":      {}
+            })
+            counters["IN_CITY"] += 1
+        if hierarchy.get("country"):
+            city_name = hierarchy.get("city", "Unknown City")
+            triples.append({
+                "from_label": "City", "from_name": city_name,
+                "rel_type":   "IN_COUNTRY",
+                "to_label":   "Country",  "to_name": hierarchy["country"],
+                "props":      {}
+            })
+            counters["IN_COUNTRY"] += 1
+
         print(f"[REL] Inferred Home: {home_addr!r}", flush=True)
 
     for i, v in enumerate(visits):
@@ -272,6 +249,27 @@ def extract(data: dict | list, self_name: str, min_visits: int = 5,
             "props":      {"address": addr, "lat": v["lat"], "lon": v["lng"]}
         })
         counters["LOCATED_AT"] += 1
+        
+        # 3. Hierarchical Locations
+        hierarchy = parse_address_hierarchy(addr)
+        if hierarchy.get("city"):
+            triples.append({
+                "from_label": "Place", "from_name": addr,
+                "rel_type":   "IN_CITY",
+                "to_label":   "City",  "to_name": hierarchy["city"],
+                "props":      {}
+            })
+            counters["IN_CITY"] += 1
+        if hierarchy.get("country"):
+            city_name = hierarchy.get("city", "Unknown City")
+            triples.append({
+                "from_label": "City", "from_name": city_name,
+                "rel_type":   "IN_COUNTRY",
+                "to_label":   "Country",  "to_name": hierarchy["country"],
+                "props":      {}
+            })
+            counters["IN_COUNTRY"] += 1
+
         print(f"[REL] {self_name!r} --ATTENDED--> {visit_id!r} --LOCATED_AT--> {addr!r}", flush=True)
 
     print(f"\n📊 Google Timeline: {counters.get('ATTENDED',0)} Visits created linking to Places.", flush=True)
@@ -320,6 +318,28 @@ def extract(data: dict | list, self_name: str, min_visits: int = 5,
             "props":      {"address": end_addr, "lat": t["end_lat"], "lon": t["end_lng"]}
         })
         counters["ENDED_AT"] += 1
+        
+        # 4. Hierarchical Locations for Start and End Places
+        for loc_addr in (start_addr, end_addr):
+            hierarchy = parse_address_hierarchy(loc_addr)
+            if hierarchy.get("city"):
+                triples.append({
+                    "from_label": "Place", "from_name": loc_addr,
+                    "rel_type":   "IN_CITY",
+                    "to_label":   "City",  "to_name": hierarchy["city"],
+                    "props":      {}
+                })
+                counters["IN_CITY"] += 1
+            if hierarchy.get("country"):
+                city_name = hierarchy.get("city", "Unknown City")
+                triples.append({
+                    "from_label": "City", "from_name": city_name,
+                    "rel_type":   "IN_COUNTRY",
+                    "to_label":   "Country",  "to_name": hierarchy["country"],
+                    "props":      {}
+                })
+                counters["IN_COUNTRY"] += 1
+
         print(f"[REL] {self_name!r} --TOOK_TRIP--> {trip_id!r} [{t['mode']} {t['distance']:.0f}m]", flush=True)
 
     print(f"\n📊 Google Timeline: {counters.get('TOOK_TRIP',0)} Trips created linking to start/end Places.", flush=True)
@@ -387,7 +407,21 @@ def extract(data: dict | list, self_name: str, min_visits: int = 5,
                         "ON MATCH SET pl.address = $addr, pl.lat = $lat, pl.lon = $lon "
                         f"MERGE (tr)-[:{rel}]->(pl)",
                         tid=t["from_name"], addr=t["to_name"],
-                        lat=p["lat"], lon=p["lon"]
+                        lat=p.get("lat"), lon=p.get("lon")
+                    )
+                elif t["rel_type"] == "IN_CITY":
+                    s.run(
+                        "MERGE (p:Place {name: $pn}) "
+                        "MERGE (c:City {name: $cn}) "
+                        "MERGE (p)-[:IN_CITY]->(c)",
+                        pn=t["from_name"], cn=t["to_name"]
+                    )
+                elif t["rel_type"] == "IN_COUNTRY":
+                    s.run(
+                        "MERGE (c:City {name: $cn}) "
+                        "MERGE (co:Country {name: $con}) "
+                        "MERGE (c)-[:IN_COUNTRY]->(co)",
+                        cn=t["from_name"], con=t["to_name"]
                     )
         print("✅ Written custom Timeline schema to Neo4j.", flush=True)
 

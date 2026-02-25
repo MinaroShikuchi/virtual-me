@@ -25,8 +25,8 @@ def init_settings_defaults():
         "enable_thinking": DEFAULT_ENABLE_THINKING,
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "embedding_model": EMBEDDING_MODEL,
-        "n_results": 30,
-        "top_k": 10,
+        "n_results": 500,
+        "top_k": 100,
         "do_rerank": True,
         "hybrid": True,
         "neo4j_uri": NEO4J_URI,
@@ -176,13 +176,7 @@ def _settings_dialog():
         elif selected == "🔎 RAG":
             st.markdown("#### :material/manage_search: RAG Settings")
 
-            r1, r2 = st.columns(2)
-            with r1:
-                _n_res = st.slider("Retrieve (vector search)", 5, 100, value=st.session_state["draft_n_results"], key="dlg_n_results")
-                st.session_state["draft_n_results"] = _n_res
-            with r2:
-                _top_k = st.slider("Keep top-k (after reranking)", 1, 30, value=st.session_state["draft_top_k"], key="dlg_top_k")
-                st.session_state["draft_top_k"] = _top_k
+            # RAG limits are now removed as requested (hardcoded to 500/100)
 
             r3, r4 = st.columns(2)
             with r3:

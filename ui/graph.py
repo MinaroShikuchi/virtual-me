@@ -32,9 +32,10 @@ PLATFORMS = [
                 "script": "tools/extractors/facebook_messages.py",
                 "args": lambda cfg: ["--json-file", cfg.get("json_file", "facebook_messages.json"), "--self-name", cfg.get("self_name", SELF_NAME)],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload messages.json", type=["json"], key="fb_msg_up")},
-                "entities": ["Person", "Place", "Company", "Interest"],
+                "entities": ["Person", "Place", "City", "Country", "Company", "Interest"],
                 "relationships": ["MET", "VISITED", "LIVES_IN", "WORKS_AT", "INTERESTED_IN",
-                                  "PARTNER_OF", "FAMILY_OF", "COLLEAGUE_OF", "FRIEND_OF"],
+                                  "PARTNER_OF", "FAMILY_OF", "COLLEAGUE_OF", "FRIEND_OF",
+                                  "IN_CITY", "IN_COUNTRY"],
             },
             {
                 "label": "Friends / Contacts (HTML)",
@@ -66,8 +67,8 @@ PLATFORMS = [
                 "script": "tools/extractors/linkedin_positions.py",
                 "args": lambda cfg: ["--csv-file", cfg.get("csv_file", "Positions.csv"), "--self-name", cfg.get("self_name", SELF_NAME)],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Positions.csv", type=["csv"], key="li_pos_up")},
-                "entities": ["Person", "Company", "Place"],
-                "relationships": ["WORKS_AT", "LIVES_IN"],
+                "entities": ["Person", "Company", "Place", "City", "Country"],
+                "relationships": ["WORKS_AT", "LIVES_IN", "IN_CITY", "IN_COUNTRY"],
             },
             {
                 "label": "Connections",
@@ -123,8 +124,8 @@ PLATFORMS = [
                 "script": "tools/extractors/google_timeline.py",
                 "args": lambda cfg: ["--records", cfg.get("records", "data/google/Timeline.json"), "--self-name", cfg.get("self_name", SELF_NAME)],
                 "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload Timeline.json or Records.json", type=["json"], key="gl_up")},
-                "entities": ["Person", "Place"],
-                "relationships": ["VISITED", "LIVES_IN"],
+                "entities": ["Person", "Place", "City", "Country", "Visit", "Trip"],
+                "relationships": ["VISITED", "LIVES_IN", "TOOK_TRIP", "STARTED_AT", "ENDED_AT", "LOCATED_AT", "IN_CITY", "IN_COUNTRY"],
             },
             {
                 "label": "Calendar Events (.ics)",
@@ -135,8 +136,8 @@ PLATFORMS = [
                     ["--data-dir", "data/google", "--self-name", cfg.get("self_name", SELF_NAME)]
                 ),
                 "extra_fields": lambda: {"uploaded_files": st.file_uploader("Upload Calendar .ics files", type=["ics"], key="gcal_up", accept_multiple_files=True)},
-                "entities": ["Person", "Event", "Place"],
-                "relationships": ["ATTENDED", "LOCATED_AT"],
+                "entities": ["Person", "Event", "Place", "City", "Country"],
+                "relationships": ["ATTENDED", "LOCATED_AT", "IN_CITY", "IN_COUNTRY"],
             }
         ]
     },
@@ -151,13 +152,15 @@ PLATFORMS = [
                 "label": "Activities",
                 "script": "tools/extractors/strava.py",
                 "args": lambda cfg: (
-                    ["--csv-file", cfg["csv_file"], "--self-name", cfg.get("self_name", SELF_NAME)]
-                    if "csv_file" in cfg else
-                    ["--data-dir", cfg.get("data_dir", "data/strava"), "--self-name", cfg.get("self_name", SELF_NAME)]
+                    ["--data-dir", cfg.get("data_dir", "data/strava"), "--self-name", cfg.get("self_name", SELF_NAME)] +
+                    (["--csv-file", cfg["csv_file"]] if "csv_file" in cfg else [])
                 ),
-                "extra_fields": lambda: {"uploaded_file": st.file_uploader("Upload activities.csv", type=["csv", "json"], key="st_up")},
-                "entities": ["Person", "Activity"],
-                "relationships": ["INTERESTED_IN"],
+                "extra_fields": lambda: {
+                    "data_dir": st.text_input("**REQUIRED for Location Data**: Local path to your unzipped Strava export folder", value="./data/strava", key="st_dir_input"),
+                    "uploaded_file": st.file_uploader("OR upload activities.csv (Note: Location/GPS data will NOT be extracted via upload)", type=["csv", "json"], key="st_up")
+                },
+                "entities": ["Person", "Activity", "Place", "City", "Country"],
+                "relationships": ["PERFORMED", "LOCATED_AT", "IN_CITY", "IN_COUNTRY", "INTERESTED_IN"],
             }
         ]
     },
@@ -185,40 +188,12 @@ def _hex_to_rgba(hex_color: str, alpha: float) -> str:
     r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
     return f"rgba({r},{g},{b},{alpha})"
 
-def _try_connect(uri=None, user=None, password=None) -> tuple[Neo4jClient | None, bool]:
-    """Returns (client, is_connected). Caller must close client."""
-    try:
-        c = get_client(uri=uri, user=user, password=password)
-        return c, c.verify()
-    except Exception:
-        return None, False
-
 
 # ── Main render function ──────────────────────────────────────────────────────
 
 def render_graph_tab(neo4j_uri=None, neo4j_user=None, neo4j_password=None):
-    st.markdown("### :material/hub: Knowledge Graph")
-    st.caption("Episodic memory stored in Neo4j — extract entities & relationships from your data sources.")
-
-    # ── Connection banner ──
-    client, alive = _try_connect(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
-    if alive:
-        st.markdown(
-            f'<span class="status-ok">● Neo4j</span> — connected at <code>{neo4j_uri or NEO4J_URI}</code>',
-            unsafe_allow_html=True,
-        )
-    else:
-        st.markdown(
-            f'<span class="status-err">○ Neo4j</span> — unreachable at <code>{neo4j_uri or NEO4J_URI}</code>. '
-            f'Start it with <code>docker compose up neo4j -d</code>',
-            unsafe_allow_html=True,
-        )
-        if client:
-            client.close()
-        st.divider()
-        _render_extractor_section(alive=False)
-        return
-
+    st.markdown("### :material/manufacturing: Platform Extract")
+    st.caption("Semantic memory stored in Neo4j — extract entities & relationships from your data sources.")
 
     # ── Extractor section ──
     _render_extractor_section(alive=True, uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
@@ -294,25 +269,12 @@ def _render_interest_chart(chart_key: str):
 
 
 def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
-    st.markdown("#### :material/manufacturing: Run Extractors")
     if not alive:
         st.info("Connect Neo4j first to run extractors.")
 
-    # Global settings
-    gcol1, gcol2, gcol3 = st.columns([2, 1, 1], vertical_alignment="bottom")
-    with gcol1:
-        self_name = st.text_input(
-            "Your name in the graph",
-            value=SELF_NAME or "Me",
-            key="kg_self_name",
-            help="This anchors 'you' as a Person node in the graph",
-        )
-    with gcol2:
-        limit = st.number_input("Limit chunks (0 = all)", min_value=0, value=0,
-                                step=500, key="kg_limit")
-    with gcol3:
-        dry_run = st.toggle("Dry run (no writes)", value=True, key="kg_dry_run",
-                            help="Print extracted triples without writing to Neo4j")
+    # We hardcode these now
+    self_name = SELF_NAME
+    limit = 0 
 
     st.markdown("")
 
@@ -438,7 +400,13 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
                 _scrollable_log(log_box, st.session_state[log_key])
 
             # ── Run button ──────────────────────────────────────────────────
-            run_col, _ = st.columns([1, 3])
+            run_col, dry_col = st.columns([1, 1], vertical_alignment="center")
+            with dry_col:
+                dry_run = st.toggle(
+                    "Dry run", value=True, 
+                    key=f"dry_run_{platform['id']}_{ext['label']}",
+                    help="Print extracted triples without writing to Neo4j"
+                )
             with run_col:
                 run_clicked = st.button(
                     f"Run {ext['label']}",

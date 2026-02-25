@@ -99,7 +99,7 @@ NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password")
 # ── Knowledge graph self-identity ─────────────
 # The name used to anchor "you" in the graph (most-frequent sender auto-detected
 # in extractors, but can be overridden with --self-name CLI arg)
-SELF_NAME      = os.environ.get("SELF_NAME", "ME")
+SELF_NAME      = "ME"
 
 # ── Known data sources ────────────────────────
 SOURCES = [
