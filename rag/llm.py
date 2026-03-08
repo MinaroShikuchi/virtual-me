@@ -151,8 +151,22 @@ Return ONLY valid JSON matching this schema:
     print(f"Purification completed: kept {len(filtered_docs)} out of {len(docs)} docs\n{'='*50}\n")
     return filtered_docs
 
+def _build_history_messages(conversation_history: list | None) -> list:
+    """Extract prior user/assistant turns for multi-turn context."""
+    if not conversation_history:
+        return []
+    msgs = []
+    for msg in conversation_history:
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role in ("user", "assistant") and content:
+            msgs.append({"role": role, "content": content})
+    return msgs
+
+
 def call_llm(question: str, docs: list, episodes: list, facts: list,
-             model: str, ollama_host: str, num_ctx: int, system_prompt: str, enable_thinking: bool = True):
+             model: str, ollama_host: str, num_ctx: int, system_prompt: str,
+             enable_thinking: bool = True, conversation_history: list | None = None):
     """
     Returns (thinking, answer, prompt_tokens, completion_tokens).
     """
@@ -169,13 +183,14 @@ def call_llm(question: str, docs: list, episodes: list, facts: list,
         f"CONTEXT:\n{ctx}"
     )
 
+    messages = [{"role": "system", "content": full_system_prompt}]
+    messages.extend(_build_history_messages(conversation_history))
+    messages.append({"role": "user", "content": question})
+
     client = ollama.Client(host=ollama_host)
     chat_kwargs = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": full_system_prompt},
-            {"role": "user",   "content": question},
-        ],
+        "messages": messages,
         "stream": False,
         "options": {"num_ctx": num_ctx},
     }
@@ -189,13 +204,26 @@ def call_llm(question: str, docs: list, episodes: list, facts: list,
 def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: list,
                               model: str, ollama_host: str, num_ctx: int,
                               active_personas: list, deliberation_rounds: int, enable_thinking: bool = True,
-                              update_callback=None):
+                              update_callback=None, conversation_history: list | None = None,
+                              discovered_identities: dict | None = None):
     """
     Returns (thinking, answer, prompt_tokens, completion_tokens, deliberations).
     Deliberations is a list of dicts: {"persona": name, "round": r, "response": text}
+
+    Parameters
+    ----------
+    discovered_identities : dict | None
+        Optional dict mapping identity name → description string.
+        These are merged with the hardcoded IDENTITIES so that
+        discovered personality facets can participate in deliberation.
     """
     ctx = _build_context_string(docs, episodes, facts)
     client = ollama.Client(host=ollama_host)
+
+    # Merge hardcoded identities with discovered ones
+    all_identities = dict(IDENTITIES)
+    if discovered_identities:
+        all_identities.update(discovered_identities)
     
     print(f"\n[DELIBERATE] Starting committee with {len(docs)} docs, {len(episodes)} episodes, {len(facts)} facts.")
     
@@ -206,10 +234,10 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
     # 1. Deliberation Rounds
     for r in range(1, deliberation_rounds + 1):
         for persona in active_personas:
-            if persona not in IDENTITIES:
+            if persona not in all_identities:
                 continue
                 
-            persona_sys_prompt = IDENTITIES[persona]
+            persona_sys_prompt = all_identities[persona]
             
             # Inject previous deliberations into the context for this persona
             delib_ctx = ""
@@ -232,12 +260,13 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 f"CONTEXT:\n{ctx}{delib_ctx}"
             )
             
+            persona_messages = [{"role": "system", "content": full_system_prompt}]
+            persona_messages.extend(_build_history_messages(conversation_history))
+            persona_messages.append({"role": "user", "content": question})
+
             chat_kwargs = {
                 "model": model,
-                "messages": [
-                    {"role": "system", "content": full_system_prompt},
-                    {"role": "user",   "content": question},
-                ],
+                "messages": persona_messages,
                 "stream": False,
                 "options": {"num_ctx": num_ctx},
             }
@@ -258,6 +287,8 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
             thinking, answer, p_tok, c_tok = _parse_llm_response(resp)
             total_prompt_tok += p_tok
             total_comp_tok += c_tok
+            
+            print(f"[{persona.upper()} ANSWER (Round {r})]:\n{answer}\n{'='*50}")
             
             if update_callback:
                 update_callback(persona, r, "done", answer)
@@ -292,12 +323,13 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         f"CONTEXT:\n{ctx}{delib_ctx}"
     )
     
+    synthesis_messages = [{"role": "system", "content": full_system_prompt}]
+    synthesis_messages.extend(_build_history_messages(conversation_history))
+    synthesis_messages.append({"role": "user", "content": question})
+
     chat_kwargs = {
         "model": model,
-        "messages": [
-            {"role": "system", "content": full_system_prompt},
-            {"role": "user",   "content": question},
-        ],
+        "messages": synthesis_messages,
         "stream": False,
         "options": {"num_ctx": num_ctx},
     }
@@ -315,5 +347,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
     thinking, answer, p_tok, c_tok = _parse_llm_response(resp)
     total_prompt_tok += p_tok
     total_comp_tok += c_tok
+    
+    print(f"[THE SELF FINAL ANSWER]:\n{answer}\n{'='*50}")
     
     return thinking, answer, total_prompt_tok, total_comp_tok, deliberations

@@ -3,7 +3,7 @@ ui/rag_explorer.py — RAG Explorer tab: inspect retrieved documents without cal
 """
 import streamlit as st
 
-from rag.retrieval import retrieve, analyze_intent, build_where
+from rag.rag_retrieval import rag_retrieval, build_where
 
 
 def render_rag_tab(collection, episodic, id_to_name, name_to_id,
@@ -16,20 +16,20 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
     if "rag_results" not in st.session_state:
         st.session_state.rag_results = {"docs": [], "episodes": [], "intent": {}}
 
+    # ── Search form (Enter key submits everywhere inside) ──
+    with st.form("rag_explorer_form"):
+        # ── Top row: query + friend dropdown ──
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            query = st.text_input("Semantic query",
+                                  placeholder="e.g. vacances, boulot, amour…", key="rag_query")
+        with col2:
+            friend_options = ["All conversations"] + sorted(
+                {v for v in id_to_name.values() if v}, key=lambda x: x.lower()
+            )
+            selected_friend = st.selectbox("Filter by friend", friend_options, key="rag_friend")
 
-    # ── Top row: query + friend dropdown ──
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        query = st.text_input("Semantic query",
-                              placeholder="e.g. vacances, boulot, amour…", key="rag_query")
-    with col2:
-        friend_options = ["All conversations"] + sorted(
-            {v for v in id_to_name.values() if v}, key=lambda x: x.lower()
-        )
-        selected_friend = st.selectbox("Filter by friend", friend_options, key="rag_friend")
-
-    # ── Metadata filter row ──
-    with st.expander("Metadata filters", expanded=True, icon=":material/tune:"):
+        # ── Metadata filter row ──
         fc1, fc2, fc3, fc4 = st.columns([2, 2, 2, 2])
         with fc1:
             date_from = st.date_input("Date from", value=None, key="rag_date_from")
@@ -41,6 +41,8 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
         with fc4:
             min_msgs = st.number_input("Min messages in chunk", min_value=1, value=1,
                                        step=1, key="rag_min_msgs")
+
+        submitted = st.form_submit_button("Run Retrieval Analysis", icon=":material/search:")
 
     if not query:
         st.info("Enter a query above to inspect retrieved documents.")
@@ -57,9 +59,9 @@ def render_rag_tab(collection, episodic, id_to_name, name_to_id,
     if min_msgs > 1:
         metadata_filters["min_messages"] = int(min_msgs)
 
-    if st.button("Run Retrieval Analysis", icon=":material/search:"):
+    if submitted:
         with st.spinner("Querying retrieval pipeline…"):
-            docs, episodes, intent = retrieve(
+            docs, episodes, intent = rag_retrieval(
                 query, n_results,
                 collection, episodic, id_to_name, name_to_id,
                 intent_model, ollama_host,

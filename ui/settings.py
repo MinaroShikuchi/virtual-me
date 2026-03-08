@@ -135,7 +135,10 @@ def _settings_dialog():
 
             st.markdown("#### :material/diversity_3: Inner Deliberation Committee")
             st.caption("Select personas to debate the answer before 'The Self' responds.")
-            _personas = [p for p in IDENTITIES.keys() if p != "The Self"]
+            # Merge hardcoded identities with discovered ones from Personas page
+            _discovered = st.session_state.get("discovered_identities", {})
+            _all_identities = {**IDENTITIES, **{k: v for k, v in _discovered.items()}}
+            _personas = [p for p in _all_identities.keys() if p != "The Self"]
             
             _act_pers = st.multiselect(
                 "Active Personas",
@@ -227,8 +230,10 @@ def _settings_dialog():
             load_embedding_func.clear()
             load_chroma.clear()
             st.toast("Embedding model changed. Cached resources cleared.", icon="⚠️")
+        else:
+            st.toast("Settings saved.", icon="✅")
 
-        st.rerun()
+        st.rerun(scope="fragment")
 
 def render_settings():
     """

@@ -3,7 +3,7 @@ ui/chat.py — Chat tab: conversational interface with memory retrieval.
 """
 import streamlit as st
 
-from rag.retrieval import retrieve
+from rag.rag_retrieval import rag_retrieval
 from rag.llm import call_llm
 from rag.graph_retrieval import retrieve_facts
 
@@ -72,7 +72,7 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
                 st.caption(f"*Introspective Query: {prompt}*")
 
             with st.spinner("Analyzing intent and retrieving memories…"):
-                docs, episodes, intent = retrieve(
+                docs, episodes, intent = rag_retrieval(
                     prompt, n_results,
                     collection, episodic, id_to_name, name_to_id,
                     intent_model, ollama_host,
@@ -137,7 +137,9 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
                         thinking, answer, p_tok, c_tok, deliberations = deliberate_and_synthesize(
                             prompt, docs, episodes, facts, model, ollama_host, num_ctx,
                             active_personas, deliberation_rounds, enable_thinking,
-                            update_callback=ui_callback
+                            update_callback=ui_callback,
+                            conversation_history=st.session_state.messages[:-1],
+                            discovered_identities=st.session_state.get("discovered_identities"),
                         )
                         status.update(label="Inner Deliberation Committee", state="complete", expanded=False)
                     except Exception as e:
@@ -147,7 +149,8 @@ def render_chat_tab(collection, episodic, id_to_name, name_to_id,
                 with st.spinner(f"Asking {model}…"):
                     try:
                         thinking, answer, p_tok, c_tok = call_llm(
-                            prompt, docs, episodes, facts, model, ollama_host, num_ctx, system_prompt, enable_thinking
+                            prompt, docs, episodes, facts, model, ollama_host, num_ctx, system_prompt, enable_thinking,
+                            conversation_history=st.session_state.messages[:-1]
                         )
                         deliberations = None
                     except Exception as e:

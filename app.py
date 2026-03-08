@@ -5,7 +5,7 @@ Module layout:
   config.py              — constants, SOURCES registry, DATA_DIR
   rag/
     resources.py         — @st.cache_resource loaders (embeddings, reranker, ChromaDB, BM25, mappings)
-    retrieval.py         — hybrid search pipeline (semantic + BM25 + RRF + rerank)
+    rag_retrieval.py     — hybrid search pipeline (semantic + BM25 + RRF + rerank)
     llm.py               — Ollama LLM call with thinking-token support
   ui/
     sidebar.py           — sidebar: connection status
@@ -13,14 +13,16 @@ Module layout:
     dashboard.py         — Dashboard page
     chat.py              — Chat page
     rag_explorer.py      — RAG Explorer page
-    ingest.py            — Vector Store page (episodic memory)
+    ingest.py            — Data page (episodic memory & ingestion)
     graph.py             — Graph page
+    personas.py          — Personas page (message clustering & distribution)
   pages/
     dashboard.py         — page wrapper for Dashboard
     chat.py              — page wrapper for Chat
     rag_explorer.py      — page wrapper for RAG Explorer
-    ingest.py            — page wrapper for Vector Store
+    ingest.py            — page wrapper for Data
     graph.py             — page wrapper for Graph
+    personas.py          — page wrapper for Personas
 """
 import streamlit as st
 
@@ -96,12 +98,13 @@ st.markdown("""
 from rag.resources import load_chroma
 from ui.sidebar    import render_sidebar
 
-from pages.dashboard    import page as dashboard_page
-from pages.chat         import page as chat_page
-from pages.rag_explorer import page as rag_explorer_page
-from pages.ingest       import page as ingest_page
-from pages.graph        import page as graph_page
+from pages.dashboard      import page as dashboard_page
+from pages.chat           import page as chat_page
+from pages.rag_explorer   import page as rag_explorer_page
+from pages.ingest         import page as ingest_page
+from pages.graph          import page as graph_page
 from pages.entity_browser import page as entity_browser_page
+from pages.personas       import page as personas_page
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -113,12 +116,13 @@ def main():
     # Navigation (renders in sidebar automatically)
     pg = st.navigation(
         [
-            st.Page(dashboard_page,    title="Dashboard",    url_path="dashboard",    default=True, icon=":material/dashboard:"),
-            st.Page(chat_page,         title="Chat",         url_path="chat",         icon=":material/chat:"),
-            st.Page(ingest_page,       title="Vector",       url_path="vector",       icon=":material/database:"),
-            st.Page(graph_page,        title="Platform Extract", url_path="graph",        icon=":material/manufacturing:"),
-            st.Page(rag_explorer_page, title="RAG Explorer", url_path="rag",          icon=":material/search:"),
-            st.Page(entity_browser_page, title="Graph Explorer", url_path="browser",  icon=":material/travel_explore:"),
+            st.Page(dashboard_page,      title="Dashboard",         url_path="dashboard",  default=True, icon=":material/dashboard:"),
+            st.Page(chat_page,           title="Chat",              url_path="chat",        icon=":material/chat:"),
+            st.Page(ingest_page,         title="Data",              url_path="data",         icon=":material/database:"),
+            st.Page(graph_page,          title="Platform Extract",  url_path="graph",       icon=":material/manufacturing:"),
+            st.Page(rag_explorer_page,   title="RAG Explorer",      url_path="rag",         icon=":material/search:"),
+            st.Page(entity_browser_page, title="Graph Explorer",    url_path="browser",     icon=":material/travel_explore:"),
+            st.Page(personas_page,       title="Personas",          url_path="personas",    icon=":material/groups:"),
         ]
     )
 

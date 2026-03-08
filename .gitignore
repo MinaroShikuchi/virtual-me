@@ -21,6 +21,9 @@ data/*
 facebook_messages.json
 facebook_clean.json
 
+# App state (discovered identities, etc.)
+.states/
+
 # IDE
 .vscode/
 .idea/

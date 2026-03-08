@@ -95,7 +95,7 @@ def load_bm25_corpus(_collection):
     Loads ALL documents from ChromaDB and builds a BM25 full-text index.
     Cached for the session — rebuilt only when the app restarts.
 
-    Returns (bm25, corpus_docs) where corpus_docs mirrors retrieve() output schema.
+    Returns (bm25, corpus_docs) where corpus_docs mirrors rag_retrieval() output schema.
     """
     raw = _collection.get(include=["documents", "metadatas"])
     corpus_docs = []

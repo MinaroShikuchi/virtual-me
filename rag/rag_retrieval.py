@@ -1,5 +1,5 @@
 """
-rag/retrieval.py — Hybrid search pipeline: semantic + BM25 + RRF + cross-encoder rerank.
+rag/rag_retrieval.py — Hybrid search pipeline: semantic + BM25 + RRF + cross-encoder rerank.
 
 Pipeline for a semantic query:
   1a. ChromaDB vector search  → top n_results semantic candidates
@@ -193,7 +193,7 @@ def rrf_merge(semantic_docs: list, keyword_docs: list) -> list:
 
 
 # ── Main retrieval pipeline ───────────────────────────────────────────────────
-def retrieve(question: str, n_results: int,
+def rag_retrieval(question: str, n_results: int,
              collection, episodic, id_to_name: dict, name_to_id: dict,
              model: str, ollama_host: str,
              metadata_filters: dict | None = None,
@@ -220,7 +220,7 @@ def retrieve(question: str, n_results: int,
     print(f"\n[RETRIEVE] Query: '{question}'")
 
     # 1. Intent Analysis
-    intent = analyze_intent(question, model, ollama_host, name_to_id)
+    intent = analyze_intent(question, "llama3.2:3b", ollama_host, name_to_id)
     
     search_query = intent.get("search_query", "")
     if not search_query or not search_query.strip():

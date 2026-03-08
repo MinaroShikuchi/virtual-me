@@ -1,4 +1,4 @@
-"""Page: Vector Store (episodic memory)"""
+"""Page: Data (episodic memory & ingestion)"""
 import streamlit as st
 from rag.resources import load_chroma
 from ui.ingest import render_vector_tab

@@ -16,7 +16,7 @@ DATA_DIR = Path("./data")
 # ── Ollama defaults ───────────────────────────
 DEFAULT_MODEL  = "qwen2.5:7b"
 DEFAULT_INTENT_MODEL = "llama3.2:3b"
-DEFAULT_OLLAMA = "http://localhost:11434"
+DEFAULT_OLLAMA = "http://192.168.1.70:11434"
 DEFAULT_CTX    = 32768
 DEFAULT_DELIBERATION_ROUNDS = 2
 DEFAULT_ACTIVE_PERSONAS = ["The Inner Critics", "The Inner Child", "The Rebel", "The People Pleaser"]
@@ -111,7 +111,7 @@ SOURCES = [
         "chroma_source": "facebook_windowed",
         "data_folder":   "facebook",
         "file_patterns": ["*.json"],
-        "stat_label":    "messages",
+        "stat_label":    "documents",
         "description":   "Chat history ingested from Facebook Messenger export",
     },
     {
