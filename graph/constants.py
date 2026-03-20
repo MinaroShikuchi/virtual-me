@@ -23,6 +23,7 @@ REL_TYPES: list[str] = [
     "ATTENDED", "LOCATED_AT",
     "TOOK_TRIP", "STARTED_AT", "ENDED_AT",
     "PERFORMED",
+    "PLAYED",
 ]
 
 # ── Entity colour palette (hex) ──────────────────────────────────────────────
@@ -68,6 +69,7 @@ REL_ICONS: dict[str, str] = {
     "STARTED_AT":    "trip_origin",
     "ENDED_AT":      "mode_of_travel",
     "PERFORMED":     "directions_run",
+    "PLAYED":        "sports_esports",
 }
 
 # ── Interest keyword taxonomy (used by facebook_messages extractor) ───────────

@@ -17,6 +17,7 @@ import streamlit as st
 from config import NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD, SELF_NAME
 from graph.constants import ENTITY_LABELS, REL_TYPES, LABEL_COLORS, REL_ICONS
 from graph.neo4j_client import Neo4jClient, get_client
+from ui.components.log_viewer import scrollable_log
 
 # ── Extractor groups ────────────────────────────────────────────────────────
 PLATFORMS = [
@@ -164,22 +165,37 @@ PLATFORMS = [
             }
         ]
     },
+    {
+        "id": "steam",
+        "label": "Steam",
+        "icon": "sports_esports",
+        "color": "#1b2838",
+        "logo_url": "https://upload.wikimedia.org/wikipedia/commons/8/83/Steam_icon_logo.svg",
+        "extractors": [
+            {
+                "label": "Play Sessions",
+                "script": "tools/extractors/steam.py",
+                "args": lambda cfg: (
+                    ["--data-dir", cfg.get("data_dir", "data/steam"), "--self-name", cfg.get("self_name", SELF_NAME)] +
+                    (["--csv-file", cfg["csv_file"]] if "csv_file" in cfg else [])
+                ),
+                "extra_fields": lambda: {
+                    "uploaded_file": st.file_uploader(
+                        "Upload Steam play-session CSV (columns: appid, start_at, end_at)",
+                        type=["csv"], key="steam_up",
+                    )
+                },
+                "entities": ["Person", "Game", "Activity"],
+                "relationships": ["PLAYED", "INTERESTED_IN"],
+            }
+        ]
+    },
 ]
 
 # LABEL_COLORS, REL_ICONS imported from graph.constants above
 
 
 
-def _scrollable_log(container, lines: list[str], max_height: int = 300):
-    """Render log lines inside a scrollable container with reversed layout so newest is at the top."""
-    escaped = "\n".join(lines[::-1]).replace("&", "&").replace("<", "<").replace(">", ">")
-    container.markdown(
-        f'<div style="max-height:{max_height}px;overflow-y:auto;'
-        f'background:#0e1117;border:1px solid #333;border-radius:6px;'
-        f'padding:10px;font-family:monospace;font-size:13px;'
-        f'white-space:pre-wrap;color:#ccc;">{escaped}</div>',
-        unsafe_allow_html=True,
-    )
 
 
 def _hex_to_rgba(hex_color: str, alpha: float) -> str:
@@ -393,11 +409,13 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
                         cfg["csv_file"] = str(target_path)
                     else:
                         cfg["data_dir"] = str(target_dir)
+                elif platform["id"] == "steam":
+                    cfg["csv_file"] = str(target_path)
 
             # ── Persistent log display ─────────────────────────────────────
             log_box = st.empty()
             if st.session_state.get(log_key):
-                _scrollable_log(log_box, st.session_state[log_key])
+                scrollable_log(log_box, st.session_state[log_key], follow=False)
 
             # ── Run button ──────────────────────────────────────────────────
             run_col, dry_col = st.columns([1, 1], vertical_alignment="center")
@@ -432,11 +450,14 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
                     pbar  = st.progress(0, text="Starting extraction...")
                     lines: list[str] = []
 
+                    import os as _os
+                    _env = {**_os.environ, "PYTHONUNBUFFERED": "1"}
                     with st.spinner(f"Running {platform['label']} ▸ {ext['label']}…"):
                         proc = subprocess.Popen(
                             cmd, stdout=subprocess.PIPE,
                             stderr=subprocess.STDOUT,
                             text=True, bufsize=1,
+                            env=_env,
                         )
                         for line in proc.stdout:
                             ls = line.rstrip()
@@ -454,15 +475,15 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
                                 continue
                             if any(t in ls for t in
                                    ["[ENT]", "[REL]", "📊", "✅", "❌",
-                                    "🕵", "🏠", "📦", "💼", "📂"]):
+                                    "🕵", "🏠", "📦", "💼", "📂", "🎮", "⚠️"]):
                                 lines.append(ls)
-                                _scrollable_log(log_box, lines[-100:])
+                                scrollable_log(log_box, lines[-100:])
                         proc.wait()
 
                     pbar.empty()
                     st.session_state[log_key] = lines
                     if lines:
-                        _scrollable_log(log_box, lines)
+                        scrollable_log(log_box, lines, follow=False)
 
                     # ── Interest spider chart (Facebook Messages only) ─────
                     chart_key = f"chart_{platform['id']}_{ext['label']}"

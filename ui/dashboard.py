@@ -4,6 +4,7 @@ ui/dashboard.py — Dashboard tab: data source overview, ingestion status,
 """
 import streamlit as st
 import pandas as pd
+import pathlib
 
 from config import SOURCES, DATA_DIR
 
@@ -126,15 +127,40 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
 
     data_scan     = scan_data_sources()
     chroma_counts = source_chroma_counts(collection)
+    
+    # Fetch Neo4j stats early to make the dashboard "graph-aware"
+    graph_stats = {}
+    client, alive = _try_connect(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
+    if alive:
+        try:
+            graph_stats = client.graph_stats()
+        except Exception:
+            pass
+
     total_docs    = collection.count()
-    active_srcs   = sum(1 for src in SOURCES
-                        if chroma_counts.get(src["chroma_source"], 0) > 0)
+    
+    # Calculate active sources considering both Chroma and Neo4j
+    active_srcs = 0
+    for src in SOURCES:
+        has_chroma = chroma_counts.get(src["chroma_source"], 0) > 0
+        has_graph  = False
+        if "graph_label" in src and graph_stats:
+            has_graph = graph_stats.get(src["graph_label"], 0) > 0
+        
+        if has_chroma or has_graph:
+            active_srcs += 1
 
     # ── Hero metrics ──
     h1, h2, h3 = st.columns(3)
     h1.metric("Total chunks in ChromaDB", f"{total_docs:,}")
     h2.metric("Active data sources",       f"{active_srcs} / {len(SOURCES)}")
-    h3.metric("Data folder",               str(DATA_DIR.resolve()))
+    
+    # Shorten path display (e.g., ~/Git/virtual-me/data)
+    display_path = str(DATA_DIR.resolve())
+    home = str(pathlib.Path.home())
+    if display_path.startswith(home):
+        display_path = display_path.replace(home, "~", 1)
+    h3.metric("Data folder", display_path)
 
     st.divider()
 
@@ -145,16 +171,32 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
     for col, src in zip(cols, SOURCES):
         cs       = src["chroma_source"]
         ingested = chroma_counts.get(cs, 0)
+        
+        # If Chroma is empty, check Neo4j if applicable
+        graph_count = 0
+        if ingested == 0 and "graph_label" in src:
+            graph_count = graph_stats.get(src["graph_label"], 0)
+
         scan     = data_scan[src["id"]]
         files    = scan["files"]
         size_mb  = scan["size_mb"]
 
         if ingested > 0:
             status_icon, status_label, status_color = "done", f"{ingested:,} chunks", "#22c55e"
+            display_count = ingested
+            display_label = f"Ingested {src['stat_label']}"
+        elif graph_count > 0:
+            status_icon, status_label, status_color = "hub", f"{graph_count:,} nodes", "#6366f1"
+            display_count = graph_count
+            display_label = f"Graph {src['graph_label']}s"
         elif files:
             status_icon, status_label, status_color = "folder_open", f"{len(files)} file(s) ready", "#f59e0b"
+            display_count = 0
+            display_label = f"Pending {src['stat_label']}"
         else:
             status_icon, status_label, status_color = "○", "No data found", "#64748b"
+            display_count = 0
+            display_label = "No data"
 
         with col:
             st.markdown(
@@ -171,9 +213,9 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
                     <div style="font-weight:700;font-size:1rem;color:#f1f5f9;margin-bottom:4px">{src['label']}</div>
                     <div style="font-size:0.78rem;color:#94a3b8;margin-bottom:12px">{src['description']}</div>
                     <div style="font-size:1.6rem;font-weight:800;color:{src['color']};letter-spacing:-0.5px">
-                        {ingested:,}
+                        {display_count:,}
                     </div>
-                    <div style="font-size:0.72rem;color:#64748b;margin-bottom:10px">Ingested {src['stat_label']}</div>
+                    <div style="font-size:0.72rem;color:#64748b;margin-bottom:10px">{display_label}</div>
                     <div style="
                         display:inline-block;
                         background:{status_color}22;
@@ -229,13 +271,13 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
 
     st.divider()
 
-    client, alive = _try_connect(uri=neo4j_uri, user=neo4j_user, password=neo4j_password)
+    # Re-use the client and stats we fetched at the top
     if alive:
         # ── Graph stats ──
     
         st.markdown("#### :material/hub: Knowledge Graph Statistics (Semantic Memory) <span style='font-size:0.8rem;color:#888;'>click a type to explore top 10</span>", unsafe_allow_html=True)
         try:
-            stats      = client.graph_stats()
+            stats      = graph_stats # Use the stats we already have
             sel_key    = "graph_selected_label"
             chart_data = None
 

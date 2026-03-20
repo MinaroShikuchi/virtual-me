@@ -16,7 +16,7 @@ DATA_DIR = Path("./data")
 # ── Ollama defaults ───────────────────────────
 DEFAULT_MODEL  = "qwen2.5:7b"
 DEFAULT_INTENT_MODEL = "llama3.2:3b"
-DEFAULT_OLLAMA = "http://192.168.1.70:11434"
+DEFAULT_OLLAMA = "http://localhost:11434"
 DEFAULT_CTX    = 32768
 DEFAULT_DELIBERATION_ROUNDS = 2
 DEFAULT_ACTIVE_PERSONAS = ["The Inner Critics", "The Inner Child", "The Rebel", "The People Pleaser"]
@@ -134,6 +134,19 @@ SOURCES = [
         "data_folder":   "spotify",
         "file_patterns": ["Streaming_History_Audio_*.json"],
         "stat_label":    "sessions",
+        "graph_label":   "Song",
         "description":   "Extended streaming history from Spotify privacy request",
+    },
+    {
+        "id":            "steam",
+        "label":         "Steam Gaming",
+        "icon":          "sports_esports",
+        "color":         "#1b2838",
+        "chroma_source": "steam",
+        "data_folder":   "steam",
+        "file_patterns": ["*.csv"],
+        "stat_label":    "sessions",
+        "graph_label":   "Game",
+        "description":   "Play-session history from Steam",
     },
 ]

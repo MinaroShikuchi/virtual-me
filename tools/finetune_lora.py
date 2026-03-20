@@ -44,6 +44,9 @@ _OLLAMA_TO_HF: dict[str, str] = {
     "mistral:latest":               "mistralai/Mistral-7B-Instruct-v0.3",
     # Mixtral
     "mixtral:8x7b":                 "mistralai/Mixtral-8x7B-Instruct-v0.1",
+    # Qwen 3 / 3.5
+    "qwen3:4b":                    "Qwen/Qwen3-4B",
+    "qwen3.5:4b":                  "Qwen/Qwen3-4B",
     # Qwen 2.5
     "qwen2.5:0.5b":                "Qwen/Qwen2.5-0.5B-Instruct",
     "qwen2.5:1.5b":                "Qwen/Qwen2.5-1.5B-Instruct",
@@ -86,7 +89,7 @@ def _resolve_model_name(model_name: str) -> str:
     # Try without tag (e.g. "mistral:latest" → "mistral")
     base = lower.split(":")[0]
     for key, val in _OLLAMA_TO_HF.items():
-        if key.startswith(base + ":"):
+        if key.startswith(base + ":") or key == base:
             print(f"  Resolved Ollama model '{model_name}' → HuggingFace '{val}' (fuzzy match)", flush=True)
             return val
 
@@ -184,17 +187,20 @@ def run_finetune(
     print("\nLoading libraries…", flush=True)
 
     try:
+        import warnings
         import torch
         from datasets import Dataset
         from transformers import (
             TrainerCallback,
-            TrainingArguments,
             logging as hf_logging,
         )
-        from trl import SFTTrainer
+        from trl import SFTConfig, SFTTrainer
         hf_logging.set_verbosity_info()
         hf_logging.enable_default_handler()
         hf_logging.enable_explicit_format()
+
+        # Suppress the noisy "pin_memory not supported on MPS" warning
+        warnings.filterwarnings("ignore", message=".*pin_memory.*")
     except ImportError as e:
         print(f"\nERROR: Missing required library: {e}", flush=True)
         print("Install with: pip install transformers peft trl datasets bitsandbytes", flush=True)
@@ -283,11 +289,21 @@ def run_finetune(
         else:
             device_map = "auto" if torch.cuda.is_available() else None
             dtype = torch.float16 if torch.cuda.is_available() else torch.float32
-            if not torch.cuda.is_available() and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
-                dtype = torch.float32  # MPS doesn't support float16 well for training
+
+            # Apple Silicon (MPS): use bfloat16 instead of float32 to halve
+            # memory usage.  MPS supports bfloat16 from PyTorch 2.1+.
+            _has_mps = (
+                not torch.cuda.is_available()
+                and hasattr(torch.backends, "mps")
+                and torch.backends.mps.is_available()
+            )
+            if _has_mps:
+                dtype = torch.bfloat16
+                print("  MPS detected — using bfloat16 to reduce memory", flush=True)
+
             model = AutoModelForCausalLM.from_pretrained(
                 base_model,
-                dtype=dtype,
+                torch_dtype=dtype,
                 device_map=device_map,
                 trust_remote_code=True,
             )
@@ -298,6 +314,12 @@ def run_finetune(
 
         print(f"  Model loaded: {model.config.model_type}", flush=True)
         print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
+
+        # Enable gradient checkpointing to trade compute for memory —
+        # stores only a fraction of activations during the forward pass
+        # and recomputes the rest during backward.
+        model.gradient_checkpointing_enable()
+        print("  Gradient checkpointing: enabled", flush=True)
 
         print(f"\nConfiguring LoRA (rank={lora_rank}, alpha={lora_alpha})…", flush=True)
         lora_config = LoraConfig(
@@ -320,22 +342,42 @@ def run_finetune(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    training_args = TrainingArguments(
+    # Detect whether we should use bf16 (MPS / newer GPUs) or fp16 (CUDA)
+    _use_fp16 = torch.cuda.is_available()
+    _use_bf16 = (
+        not torch.cuda.is_available()
+        and hasattr(torch.backends, "mps")
+        and torch.backends.mps.is_available()
+    )
+
+    # Compute warmup_steps from warmup_ratio (warmup_ratio is deprecated
+    # in transformers ≥ v5.2).
+    total_steps = max(1, (num_examples // (batch_size * gradient_accumulation_steps)) * epochs)
+    warmup_steps = max(1, int(total_steps * warmup_ratio))
+
+    training_args = SFTConfig(
         output_dir=str(output_path),
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
         gradient_accumulation_steps=gradient_accumulation_steps,
         learning_rate=learning_rate,
-        warmup_ratio=warmup_ratio,
+        warmup_steps=warmup_steps,
         logging_steps=logging_steps,
         save_steps=save_steps,
         save_total_limit=2,
-        fp16=torch.cuda.is_available(),
-        bf16=False,
+        fp16=_use_fp16,
+        bf16=_use_bf16,
+        gradient_checkpointing=True,
         optim="adamw_torch",
         lr_scheduler_type="cosine",
         report_to="none",
         remove_unused_columns=False,
+        disable_tqdm=True,              # avoid tqdm progress bar spam in log viewer
+        dataloader_pin_memory=False,    # not supported on MPS, avoids warning
+        # SFT-specific settings (moved from SFTTrainer constructor)
+        max_length=max_seq_length,
+        dataset_text_field="text",
+        packing=False,
     )
 
     # ── Train ──────────────────────────────────────────────────────────────
@@ -355,28 +397,13 @@ def run_finetune(
 
     callbacks = [_ProgressCallback()]
 
-    import inspect
-    _trl_new_api = "processing_class" in inspect.signature(SFTTrainer.__init__).parameters
-
-    if _trl_new_api:
-        trainer = SFTTrainer(
-            model=model,
-            processing_class=tokenizer,
-            train_dataset=dataset,
-            args=training_args,
-            callbacks=callbacks or None,
-        )
-    else:
-        trainer = SFTTrainer(
-            model=model,
-            tokenizer=tokenizer,
-            train_dataset=dataset,
-            args=training_args,
-            max_seq_length=max_seq_length,
-            dataset_text_field="text",
-            packing=False,
-            callbacks=callbacks or None,
-        )
+    trainer = SFTTrainer(
+        model=model,
+        processing_class=tokenizer,
+        train_dataset=dataset,
+        args=training_args,
+        callbacks=callbacks or None,
+    )
 
     trainer.train()
 

@@ -47,21 +47,19 @@ def render_sidebar(collection, episodic):
         # ── Ollama status ─────────────────────────────────────────────────
         ollama_host = st.session_state.get("ollama_host", DEFAULT_OLLAMA)
         try:
-            import urllib.request, json as _json
-            with urllib.request.urlopen(f"{ollama_host.rstrip('/')}/api/tags", timeout=5) as _r:
-                _data = _json.loads(_r.read())
-            _models = [m.get("model", m.get("name", "")) for m in _data.get("models", [])]
+            # Use a short timeout to avoid blocking the sidebar if the host is down
+            _client = ollama.Client(host=ollama_host, timeout=5.0)
+            _models = [m["model"] for m in _client.list().get("models", [])]
             st.markdown(
                 f'<span class="status-ok">● Ollama</span> — reachable '
                 f'({len(_models)} model{"s" if len(_models) != 1 else ""})',
                 unsafe_allow_html=True,
             )
+            st.caption(f"Host: `{ollama_host}`")
         except Exception as _e:
-            st.markdown(
-                f'<span class="status-err">○ Ollama</span> — unreachable'
-                f'<br><small style="color:#888">{_e}</small>',
-                unsafe_allow_html=True,
-            )
+            st.markdown('<span class="status-err">○ Ollama</span> — unreachable',
+                        unsafe_allow_html=True)
+            st.caption(f"Host: `{ollama_host}`")
 
         # ── Neo4j status ──────────────────────────────────────────────────
         neo4j_uri = st.session_state.get("neo4j_uri", NEO4J_URI)
@@ -73,14 +71,17 @@ def render_sidebar(collection, episodic):
                     st.session_state.get("neo4j_user", NEO4J_USER),
                     st.session_state.get("neo4j_password", NEO4J_PASSWORD),
                 ),
+                connection_timeout=5.0,
             )
             _driver.verify_connectivity()
             _driver.close()
             st.markdown('<span class="status-ok">● Neo4j</span> — connected',
                         unsafe_allow_html=True)
+            st.caption(f"URI: `{neo4j_uri}`")
         except Exception:
             st.markdown('<span class="status-warn">○ Neo4j</span> — not connected',
                         unsafe_allow_html=True)
+            st.caption(f"URI: `{neo4j_uri}`")
 
         # ── Settings button ───────────────────────────────────────────────
         st.divider()

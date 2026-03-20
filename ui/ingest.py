@@ -15,20 +15,11 @@ from pathlib import Path
 import streamlit as st
 
 from config import CHROMA_PATH, SOURCES
+from ui.components.log_viewer import scrollable_log
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _scrollable_log(container, lines: list[str], max_height: int = 300):
-    """Render log lines inside a scrollable container with reversed layout so newest is at the top."""
-    escaped = "\n".join(lines[::-1]).replace("&", "&").replace("<", "<").replace(">", ">")
-    container.markdown(
-        f'<div style="max-height:{max_height}px;overflow-y:auto;'
-        f'background:#0e1117;border:1px solid #333;border-radius:6px;'
-        f'padding:10px;font-family:monospace;font-size:13px;'
-        f'white-space:pre-wrap;color:#ccc;">{escaped}</div>',
-        unsafe_allow_html=True,
-    )
 
 
 # ── Main render function ─────────────────────────────────────────────────────
@@ -162,7 +153,7 @@ def _render_ingestor_section(collection, current_count: int):
         log_key_extract = "vec_log_extract"
         log_box_extract = st.empty()
         if st.session_state.get(log_key_extract):
-            _scrollable_log(log_box_extract, st.session_state[log_key_extract])
+            scrollable_log(log_box_extract, st.session_state[log_key_extract], follow=False, title="Extract")
 
         run_col, _ = st.columns([1, 3])
         with run_col:
@@ -183,11 +174,11 @@ def _render_ingestor_section(collection, current_count: int):
                         )
                         for line in proc.stdout:
                             lines.append(line.rstrip())
-                            _scrollable_log(log_box_extract, lines[-40:])
+                            scrollable_log(log_box_extract, lines[-40:], title="Extract")
                         proc.wait()
                     st.session_state[log_key_extract] = lines
                     if lines:
-                        _scrollable_log(log_box_extract, lines)
+                        scrollable_log(log_box_extract, lines, follow=False, title="Extract")
                     if proc.returncode == 0:
                         st.success(f"Extract complete — written to `{out_json}`")
                     else:
@@ -258,7 +249,7 @@ def _render_ingestor_section(collection, current_count: int):
         log_key_ft = "vec_log_finetune"
         log_box_ft = st.empty()
         if st.session_state.get(log_key_ft):
-            _scrollable_log(log_box_ft, st.session_state[log_key_ft])
+            scrollable_log(log_box_ft, st.session_state[log_key_ft], follow=False, title="Fine-tune Export")
 
         run_col_ft, _ = st.columns([1, 3])
         with run_col_ft:
@@ -298,7 +289,7 @@ def _render_ingestor_section(collection, current_count: int):
                     lines_ft.append(f"Output: {stats['output_file']}")
 
                     st.session_state[log_key_ft] = lines_ft
-                    _scrollable_log(log_box_ft, lines_ft)
+                    scrollable_log(log_box_ft, lines_ft, follow=False, title="Fine-tune Export")
 
                     st.success(
                         f"Exported **{stats['pairs_exported']:,}** training examples "
@@ -346,33 +337,42 @@ def _render_ingestor_section(collection, current_count: int):
             "`datasets`, and optionally `bitsandbytes` for 4-bit quantization."
         )
 
-        # Ollama host selector for model discovery
+        # ── Ollama host for model selection ────────────────────────────────
         from config import DEFAULT_OLLAMA
-        _lora_ollama_host = st.text_input(
-            "Ollama host",
-            value=st.session_state.get("ollama_host", DEFAULT_OLLAMA),
-            key="lora_ollama_host",
-            help="Remote or local Ollama instance to browse available models.",
-        )
+        _default_lora_host = st.session_state.get("ollama_host", DEFAULT_OLLAMA)
 
+        host_col, refresh_col = st.columns([4, 1])
+        with host_col:
+            _lora_ollama_host = st.text_input(
+                "Ollama host (for model list)",
+                value=st.session_state.get("lora_ollama_host", _default_lora_host),
+                key="lora_ollama_host_input",
+                help="Enter the URL of a local or remote Ollama instance to list available models.",
+            )
+            st.session_state["lora_ollama_host"] = _lora_ollama_host
+        with refresh_col:
+            st.markdown("<br>", unsafe_allow_html=True)
+            _refresh = st.button("🔄", key="btn_lora_refresh_models",
+                                 help="Refresh model list from the Ollama host")
+
+        # Fetch models from the specified Ollama host
         _lora_models: list[str] = []
-        _lora_conn_error: str = ""
+        _lora_conn_error: str | None = None
         try:
-            import urllib.request, json as _json
-            with urllib.request.urlopen(
-                f"{_lora_ollama_host.rstrip('/')}/api/tags", timeout=5
-            ) as _r:
-                _lora_data = _json.loads(_r.read())
+            import ollama as _ollama_mod
+            _lora_client = _ollama_mod.Client(host=_lora_ollama_host)
+            _lora_model_list = _lora_client.list()
             _lora_models = sorted(
-                m.get("model", m.get("name", ""))
-                for m in _lora_data.get("models", [])
-                if m.get("model") or m.get("name")
+                m.get("name", m.get("model", ""))
+                for m in _lora_model_list.get("models", [])
+                if m.get("name") or m.get("model")
             )
         except Exception as _e:
             _lora_conn_error = str(_e)
+            _lora_models = []
 
         if _lora_conn_error:
-            st.warning(f"Cannot reach Ollama at `{_lora_ollama_host}`: {_lora_conn_error}")
+            st.warning(f"⚠️ Could not connect to Ollama at `{_lora_ollama_host}`: {_lora_conn_error}")
 
         col_lora1, col_lora2 = st.columns(2)
         with col_lora1:
@@ -382,14 +382,14 @@ def _render_ingestor_section(collection, current_count: int):
                     options=_lora_models,
                     index=0,
                     key="lora_base_model_select",
-                    help="Select from available Ollama models on the chosen host.",
+                    help=f"Models from Ollama at {_lora_ollama_host}",
                 )
             else:
                 lora_base_model = st.text_input(
                     "Base model (HuggingFace ID)",
                     value="meta-llama/Llama-3.2-3B-Instruct",
                     key="lora_base_model",
-                    help="No Ollama models found. Enter a HuggingFace model ID.",
+                    help="No Ollama models found. Enter a HuggingFace model ID directly.",
                 )
             lora_data = st.text_input(
                 "Training data (JSONL)",
@@ -467,7 +467,7 @@ def _render_ingestor_section(collection, current_count: int):
 
         log_box_lora = st.empty()
         if st.session_state.get(_LORA_LINES):
-            _scrollable_log(log_box_lora, st.session_state[_LORA_LINES])
+            scrollable_log(log_box_lora, st.session_state[_LORA_LINES], follow=False, title="LoRA Training")
 
         run_col_lora, cancel_col_lora, _ = st.columns([1, 1, 2])
         with run_col_lora:
@@ -522,7 +522,7 @@ def _render_ingestor_section(collection, current_count: int):
         # Poll while training: refresh every second to stream new log lines
         if is_training:
             lines = st.session_state.get(_LORA_LINES, [])
-            _scrollable_log(log_box_lora, lines[-50:])
+            scrollable_log(log_box_lora, lines[-50:], title="LoRA Training")
             st.spinner("Training — this may take a while…")
             import time; time.sleep(1); st.rerun()
         elif lora_proc is not None:
@@ -645,7 +645,7 @@ def _render_ingestor_section(collection, current_count: int):
         log_key_ingest = "vec_log_ingest"
         log_box_ingest = st.empty()
         if st.session_state.get(log_key_ingest):
-            _scrollable_log(log_box_ingest, st.session_state[log_key_ingest])
+            scrollable_log(log_box_ingest, st.session_state[log_key_ingest], follow=False, title="Ingest")
 
         run_col2, _ = st.columns([1, 3])
         with run_col2:
@@ -674,11 +674,11 @@ def _render_ingestor_section(collection, current_count: int):
                         )
                         for line in proc.stdout:
                             lines.append(line.rstrip())
-                            _scrollable_log(log_box_ingest, lines[-50:])
+                            scrollable_log(log_box_ingest, lines[-50:], title="Ingest")
                         proc.wait()
                     st.session_state[log_key_ingest] = lines
                     if lines:
-                        _scrollable_log(log_box_ingest, lines)
+                        scrollable_log(log_box_ingest, lines, follow=False, title="Ingest")
                     if proc.returncode == 0:
                         if reset_col:
                             # Clear Streamlit caches so they don't hold the old deleted collection UUID

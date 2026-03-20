@@ -208,7 +208,7 @@ def _settings_dialog():
         _emb_changed = (st.session_state["draft_embedding_model"] != st.session_state["embedding_model"])
 
         # Commit all drafts to live variables
-        st.session_state["ollama_host"] = st.session_state["draft_ollama_host"]
+        st.session_state["ollama_host"] = st.session_state["draft_ollama_host"].strip()
         st.session_state["model"] = st.session_state["draft_model"]
         st.session_state["intent_model"] = st.session_state["draft_intent_model"]
         st.session_state["num_ctx"] = st.session_state["draft_num_ctx"]
@@ -233,7 +233,7 @@ def _settings_dialog():
         else:
             st.toast("Settings saved.", icon="✅")
 
-        st.rerun(scope="fragment")
+        st.rerun()
 
 def render_settings():
     """
@@ -246,8 +246,6 @@ def render_settings():
     The settings button itself lives in the sidebar (see ui/sidebar.py).
     """
     init_settings_defaults()
-    with st.sidebar:
-        st.markdown("**Connections**")
     return (
         st.session_state["model"],
         st.session_state["intent_model"],
