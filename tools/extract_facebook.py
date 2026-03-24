@@ -8,6 +8,7 @@ Output format:
 {
     "date": "YYYY-MM-DDTHH:MM:SS",
     "source": "facebook",
+    "type": "text | reaction | system",
     "text": "message content",
     "conversation": "conversation name",
     "language": "en"
@@ -23,7 +24,7 @@ import argparse
 import json
 import os
 import re
-from collections import Counter
+from collections import Counter, defaultdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -69,13 +70,72 @@ def extract_conversation_name(filepath: Path) -> str:
     return filepath.parent.name
 
 
+# Regex to detect the Facebook reaction-duplicate artifact.
+# When a reaction is rendered in the HTML export, the message text is
+# duplicated with an emoji + person name appended, e.g.:
+#   "oh ok I didn't know 😆Gabija Vasaityte oh ok I didn't know 😆Gabija Vasaityte"
+# This regex captures: (actual text)(emoji)(Name)(space)(repeat of actual text)(emoji)(Name)
+_REACTION_EMOJI_RE = re.compile(r"[^\w\s]")
+
+
+def _clean_reaction_duplicate(text: str) -> str:
+    """
+    Fix the Facebook reaction-duplicate artifact where the message text is
+    repeated with an emoji + person name suffix.
+
+    Example::
+
+        "oh ok I didn't know 😆Gabija Vasaityte oh ok I didn't know 😆Gabija Vasaityte"
+        → "oh ok I didn't know"
+
+    Also handles emoji-only reactions like ``"❤Pierre Tognet-Bruchet"``
+    which are reclassified downstream as reactions.
+
+    Returns:
+        Cleaned text (may be shorter than input).
+    """
+    if len(text) < 6:
+        return text
+
+    # Check for exact-half duplication (reaction artifact)
+    half = len(text) // 2
+    if len(text) % 2 == 0 or abs(len(text) - 2 * half) <= 1:
+        first = text[:half].strip()
+        second = text[half:].strip()
+        if first == second:
+            # Strip trailing reaction emoji + name
+            # Pattern: "actual message 😆SomeName" → "actual message"
+            # Find last emoji character and trim from there
+            parts = re.split(r"[\U0001F600-\U0001F64F\U0001F300-\U0001F5FF"
+                             r"\U0001F680-\U0001F6FF\U0001F1E0-\U0001F1FF"
+                             r"\U00002702-\U000027B0\U0000FE00-\U0000FE0F"
+                             r"\U0001F900-\U0001F9FF\U00002600-\U000026FF"
+                             r"\U0000200D\U00002764\U0000FE0F❤️👍😆😢😮😡]+",
+                             first)
+            cleaned = parts[0].strip() if parts else first
+            return cleaned if len(cleaned) >= 2 else first
+
+    return text
+
+
+# Pre-compiled regex for reaction messages.  These are kept in the output
+# with ``"type": "reaction"`` instead of being discarded.
+_REACTION_RE = re.compile(
+    r"^(?:"
+    r"You reacted"
+    r"|Liked a message"
+    r"|.+ reacted .+ to your message"
+    r")",
+    re.IGNORECASE,
+)
+
 # Pre-compiled regex for system message detection.  Covers all known
-# Facebook Messenger automated notifications (English locale export).
+# Facebook Messenger automated notifications (English locale export)
+# **except** reactions, which are classified separately.
 _SYSTEM_RE = re.compile(
     r"^(?:"
     # ── "You …" actions ──
-    r"You reacted"
-    r"|You joined"
+    r"You joined"
     r"|You left"
     r"|You added"
     r"|You removed"
@@ -105,10 +165,28 @@ _SYSTEM_RE = re.compile(
     r"|Video call"
     r"|Missed (?:video )?call"
     r"|Say hi to"
-    r"|Liked a message"
+    # ── Media placeholders from HTML export ──
+    r"|Click for audio"
+    r"|Click for video"
     r")",
     re.IGNORECASE,
 )
+
+
+def is_reaction_message(text: str) -> bool:
+    """
+    Check if a message is a reaction (e.g. "You reacted", "Liked a message").
+
+    These are kept in the output with ``"type": "reaction"`` rather than
+    being discarded.
+
+    Args:
+        text: Message text to check
+
+    Returns:
+        True if message is a reaction, False otherwise
+    """
+    return bool(_REACTION_RE.match(text))
 
 
 def is_system_message(text: str) -> bool:
@@ -116,8 +194,9 @@ def is_system_message(text: str) -> bool:
     Check if a message is a system message that should be ignored.
 
     Covers Facebook Messenger automated notifications such as call logs,
-    attachment placeholders, unsent messages, polls, reactions, group
-    management, and connection announcements.
+    attachment placeholders, unsent messages, polls, group management,
+    and connection announcements.  Reactions are **not** considered system
+    messages — see :func:`is_reaction_message`.
 
     Args:
         text: Message text to check
@@ -214,19 +293,27 @@ def extract_messages_from_html(
             # Join all text parts
             message_text = " ".join(text_parts).strip()
             
+            # Clean reaction-duplicate artifacts
+            message_text = _clean_reaction_duplicate(message_text)
+            
             # Skip empty messages
             if not message_text:
                 continue
             
-            # Skip system messages
+            # Classify message type: system > reaction > text
             if is_system_message(message_text):
-                continue
+                msg_type = "system"
+            elif is_reaction_message(message_text):
+                msg_type = "reaction"
+            else:
+                msg_type = "text"
             
             # Create message object
             message = {
                 "date": iso_timestamp,
                 "sender_name": sender,
                 "source": "facebook",
+                "type": msg_type,
                 "text": message_text,
                 "conversation": conversation_name
             }
@@ -296,10 +383,10 @@ def _detect_conversation_language(
     if not texts:
         return "en"
 
-    # Filter system messages, export artefacts, and clean texts
+    # Filter system messages, reactions, export artefacts, and clean texts
     cleaned = []
     for t in texts:
-        if is_system_message(t) or _LANGDETECT_SKIP_RE.match(t):
+        if is_system_message(t) or is_reaction_message(t) or _LANGDETECT_SKIP_RE.match(t):
             continue
         c = _clean_for_langdetect(t)
         if len(c) >= min_chars:
@@ -375,6 +462,106 @@ def _assign_languages(
     )
 
 
+def _print_html_tree(
+    html_files: List[Path],
+    base_path: Path,
+    max_children: int = 10,
+) -> None:
+    """
+    Print a folder/subfolder tree showing which HTML files were found.
+
+    Builds a proper nested tree from the relative paths and prints it with
+    ``├──`` / ``└──`` connectors.  When a directory has more than
+    *max_children* immediate sub-entries, only the first *max_children* are
+    shown followed by ``...``.
+
+    Args:
+        html_files: List of HTML file paths.
+        base_path: Root directory used as the tree root.
+        max_children: Max children to show per directory before truncating.
+    """
+    # Build a nested dict: node = {"_files": [...], "subdir": node, ...}
+    root: dict = {"_files": []}
+    for fp in sorted(html_files):
+        try:
+            rel = fp.relative_to(base_path)
+        except ValueError:
+            rel = fp
+        parts = list(rel.parts)
+        node = root
+        for part in parts[:-1]:
+            if part not in node:
+                node[part] = {"_files": []}
+            node = node[part]
+        node["_files"].append(parts[-1])
+
+    def _count_files(node: dict) -> int:
+        """Recursively count all files under a node."""
+        total = len(node.get("_files", []))
+        for k, v in node.items():
+            if k != "_files" and isinstance(v, dict):
+                total += _count_files(v)
+        return total
+
+    def _print_node(node: dict, prefix: str = "") -> None:
+        """Recursively print tree entries with connectors."""
+        # Collect child directories (skip "_files" key)
+        child_dirs = sorted(k for k in node if k != "_files" and isinstance(node[k], dict))
+        root_files = node.get("_files", [])
+
+        # Combine entries: directories first, then root-level files.
+        # Only show the file-count leaf when there are also child dirs
+        # (otherwise the count is already on the parent directory line).
+        entries: List[tuple] = []  # (name, is_dir, data)
+        for d in child_dirs:
+            entries.append((d, True, node[d]))
+        if root_files and not child_dirs:
+            # Leaf directory — file count already shown on parent, skip
+            pass
+        elif root_files:
+            entries.append((f"({len(root_files)} file{'s' if len(root_files) != 1 else ''})", False, None))
+
+        truncated = len(entries) > max_children
+        visible = entries[:max_children] if truncated else entries
+
+        for i, (name, is_dir, data) in enumerate(visible):
+            is_last = (i == len(visible) - 1) and not truncated
+            connector = "└── " if is_last else "├── "
+            child_prefix = "    " if is_last else "│   "
+
+            if is_dir:
+                file_count = _count_files(data)
+                print(
+                    f"{prefix}{connector}📁 {name}/ ({file_count} file{'s' if file_count != 1 else ''})",
+                    flush=True,
+                )
+                _print_node(data, prefix + child_prefix)
+            else:
+                print(f"{prefix}{connector}📄 {name}", flush=True)
+
+        if truncated:
+            hidden = len(entries) - max_children
+            print(f"{prefix}└── ... ({hidden} more)", flush=True)
+
+    print(f"\n📂 {base_path.name}/", flush=True)
+    _print_node(root)
+
+    # Summary
+    all_dirs = set()
+    for fp in html_files:
+        try:
+            rel = fp.relative_to(base_path)
+        except ValueError:
+            rel = fp
+        if str(rel.parent) != ".":
+            all_dirs.add(str(rel.parent))
+    print(
+        f"\n  📊 {len(html_files)} HTML files across "
+        f"{len(all_dirs)} conversation folder{'s' if len(all_dirs) != 1 else ''}\n",
+        flush=True,
+    )
+
+
 def extract_all_messages(
     data_dir: str,
     target_user: str,
@@ -405,6 +592,9 @@ def extract_all_messages(
 
     print(f"Found {len(html_files)} HTML files to process", flush=True)
 
+    # Print folder tree of HTML files
+    _print_html_tree(html_files, data_path)
+
     for i, filepath in enumerate(html_files, 1):
         if i % 50 == 0:
             print(f"Processing file {i}/{len(html_files)}...", flush=True)
@@ -414,6 +604,36 @@ def extract_all_messages(
 
     # Sort messages by date
     all_messages.sort(key=lambda x: x["date"])
+
+    # Exclude self-conversations (user talking to themselves)
+    before = len(all_messages)
+    all_messages = [
+        m for m in all_messages
+        if m["conversation"].lower() != target_user.lower().replace(" ", "")
+        and m["conversation"].lower() != target_user.lower()
+    ]
+    self_dropped = before - len(all_messages)
+    if self_dropped:
+        print(f"  🚫 Excluded {self_dropped} messages from self-conversation", flush=True)
+
+    # Exclude conversations where the target user never spoke
+    conv_has_user: Dict[str, bool] = {}
+    for m in all_messages:
+        conv = m["conversation"]
+        if conv not in conv_has_user:
+            conv_has_user[conv] = False
+        if m["sender_name"] == target_user:
+            conv_has_user[conv] = True
+
+    silent_convs = {c for c, has in conv_has_user.items() if not has}
+    if silent_convs:
+        before = len(all_messages)
+        all_messages = [m for m in all_messages if m["conversation"] not in silent_convs]
+        print(
+            f"  🚫 Excluded {len(silent_convs)} conversation(s) where {target_user} "
+            f"never spoke ({before - len(all_messages)} messages dropped)",
+            flush=True,
+        )
 
     print(f"\nExtracted {len(all_messages)} messages from {target_user}", flush=True)
 

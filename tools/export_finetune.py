@@ -2,15 +2,29 @@
 tools/export_finetune.py — Export Facebook messages as fine-tuning data.
 
 Reads the extracted ``facebook_messages.json``, filters by date range,
-language, and quality, then structures conversations as user/assistant
+language, type, and quality, then structures conversations as user/assistant
 pairs suitable for LLM fine-tuning.
+
+Messages with ``"type": "system"`` or ``"type": "reaction"`` (set during
+extraction in ``extract_facebook.py``) are excluded — only ``"type": "text"``
+messages are kept.
+
+**Consecutive messages**: When the same person sends several messages in a
+row (e.g. two quick texts before the other person replies), each message is
+kept as a separate entry with the same role.  This preserves the natural
+burst-messaging pattern and is valid for HuggingFace/``trl`` fine-tuning
+(only OpenAI's API requires strict role alternation).
+
+A **desync guard** skips user→assistant exchanges where the assistant's first
+reply timestamp is more than 30 minutes after the user's last message, which
+indicates a crossed / out-of-order exchange rather than a genuine reply.
 
 Output format (JSONL):
     {"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
 
 Where:
-    - "user" = the other person's message
-    - "assistant" = your (self) reply
+    - "user" = the other person's message(s)
+    - "assistant" = your (self) reply/replies
 """
 
 from __future__ import annotations
@@ -22,30 +36,6 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 from config import DATA_DIR
-
-
-# ── System message detection (mirrors extract_facebook.py) ─────────────────────
-
-_SYSTEM_PATTERNS = [
-    r"^You (sent|are now connected|named the group|set the nickname|created a poll)",
-    r"^.+ (sent|named the group|set the nickname|created a poll|set the emoji)",
-    r"^.+ (joined|left) the (group|call|video chat)",
-    r"^.+ (started|ended) (a |the )?(call|video chat|sharing)",
-    r"^(Audio|Video) call",
-    r"^You (missed|started|ended) (a |the )?(call|video chat)",
-    r"^.+ reacted .+ to your message",
-    r"^.+ unsent a message",
-    r"^.+ changed the (theme|chat theme|group photo)",
-    r"^This poll is no longer available",
-    r"^.+ pinned a message",
-    r"^Liked a message$",
-]
-_SYSTEM_RE = re.compile("|".join(_SYSTEM_PATTERNS), re.IGNORECASE)
-
-
-def _is_system_message(text: str) -> bool:
-    """Check if a message is a system/automated message."""
-    return bool(_SYSTEM_RE.match(text))
 
 
 # ── URL / noise patterns ──────────────────────────────────────────────────────
@@ -89,7 +79,8 @@ _FB_ARTIFACT_RE = re.compile(
     r"is now connected on Messenger|"
     r"Say hi to your new Facebook friend|"
     r"waved at you|"
-    r"This person is unavailable)",
+    r"This person is unavailable|"
+    r"Click for audio|Click for video)",
     re.IGNORECASE,
 )
 
@@ -141,13 +132,18 @@ def export_finetune_data(
     min_words: int = 2,
     max_words: int = 200,
     max_turns: int = 1,
+    max_reply_gap_min: int = 30,
     progress_callback=None,
 ) -> dict:
     """
     Export Facebook messages as fine-tuning data in JSONL format.
 
     Filters conversations to the last *years* years, keeps only *language*
-    messages, removes system messages, and structures as user/assistant pairs.
+    ``"type": "text"`` messages (skipping ``"system"`` and ``"reaction"``),
+    removes low-quality noise, and structures as user/assistant pairs.
+
+    A **desync guard** skips pairs where the time gap between the last user
+    message and the first assistant reply exceeds *max_reply_gap_min* minutes.
 
     Parameters
     ----------
@@ -159,15 +155,21 @@ def export_finetune_data(
     max_words : maximum words for the assistant's reply (default 200).
         Replies longer than this are skipped — this is conversational
         fine-tuning, not long-form memory.
-    max_turns : number of exchange turns per training example (default 1).
+    max_turns : soft limit on exchange turns per training example (default 1).
         1 = single user→assistant pair.
         2+ = multi-turn: up to N user→assistant exchanges per example.
+        If the assistant's last reply ends with a question mark, the
+        conversation keeps extending beyond this limit so it isn't cut
+        off mid-flow (hard-capped at ``max(max_turns * 3, 10)``).
+    max_reply_gap_min : maximum minutes between the user's last message and
+        the assistant's first reply (default 30).  Pairs exceeding this are
+        skipped as likely desync / crossed messages.
     progress_callback : callable(current, total) or None
 
     Returns
     -------
     dict with stats: total_messages, filtered_messages, pairs_exported,
-    conversations_used, skipped_too_long, output_file
+    conversations_used, skipped_too_long, skipped_desync, output_file
     """
     if json_path is None:
         json_path = DATA_DIR / "facebook" / "facebook_messages.json"
@@ -208,12 +210,12 @@ def export_finetune_data(
         if m.get("language", "en") != language:
             continue
 
-        # System message filter
-        text = m.get("text", "").strip()
-        if _is_system_message(text):
+        # Type filter — only keep "text" messages (skip system & reaction)
+        if m.get("type", "text") != "text":
             continue
 
         # Clean the text
+        text = m.get("text", "").strip()
         cleaned = _clean_message(text)
         if _is_low_quality(cleaned, min_words):
             continue
@@ -236,7 +238,9 @@ def export_finetune_data(
     # "user" = other person's message, "assistant" = self's reply
     pairs_exported = 0
     skipped_too_long = 0
+    skipped_desync = 0
     conversations_used = set()
+    max_gap = timedelta(minutes=max_reply_gap_min)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     total_convs = len(conv_msgs)
@@ -255,48 +259,90 @@ def export_finetune_data(
                     i += 1
                     continue
 
-                # Collect up to max_turns of user→assistant exchanges
+                # Collect up to max_turns of user→assistant exchanges.
+                # A "turn" is one block of user message(s) followed by one
+                # block of assistant message(s).  Consecutive messages from
+                # the same sender are kept as separate entries (not merged).
+                # If the assistant's last reply ends with a question mark,
+                # keep extending beyond max_turns so the conversation isn't
+                # cut off mid-flow.  A hard cap prevents runaway loops.
                 turns: list[dict] = []
                 j = i
+                turn_count = 0
+                hard_cap = max(max_turns * 3, 10)  # safety limit
 
-                for _turn in range(max_turns):
-                    # Need a "user" message (other person)
+                while turn_count < hard_cap:
+                    # Past the soft limit — only continue if the last
+                    # assistant reply ended with a question
+                    if turn_count >= max_turns and turns:
+                        last_asst = turns[-1]["content"]
+                        if not last_asst.rstrip().endswith("?"):
+                            break
+
+                    # Need at least one "user" message (other person)
                     if j >= len(msgs) or msgs[j].get("sender_name") == self_name:
                         break
-                    user_text = msgs[j].get("text", "")
-                    j += 1
 
-                    # Collect consecutive messages from the same sender as one turn
+                    # Collect all consecutive user messages as separate entries
+                    user_entries: list[dict] = []
                     while j < len(msgs) and msgs[j].get("sender_name") != self_name:
-                        user_text += " " + msgs[j].get("text", "")
+                        user_entries.append(msgs[j])
                         j += 1
 
                     if j >= len(msgs):
                         break
 
-                    # Need an "assistant" message (self)
+                    # Need at least one "assistant" message (self)
                     if msgs[j].get("sender_name") != self_name:
                         break
-                    assistant_text = msgs[j].get("text", "")
-                    j += 1
 
-                    # Collect consecutive self messages as one turn
+                    # Desync guard: check time gap between last user msg and
+                    # first assistant reply
+                    user_date = user_entries[-1].get("date", "")
+                    asst_date = msgs[j].get("date", "")
+                    if user_date and asst_date:
+                        try:
+                            dt_user = datetime.fromisoformat(user_date)
+                            dt_asst = datetime.fromisoformat(asst_date)
+                            if dt_asst - dt_user > max_gap:
+                                skipped_desync += 1
+                                break
+                        except ValueError:
+                            pass
+
+                    # Collect all consecutive assistant messages as separate entries
+                    asst_entries: list[dict] = []
                     while j < len(msgs) and msgs[j].get("sender_name") == self_name:
-                        assistant_text += " " + msgs[j].get("text", "")
+                        asst_entries.append(msgs[j])
                         j += 1
 
-                    asst_stripped = assistant_text.strip()
-                    # Skip if assistant reply is too long
-                    if max_words > 0 and len(asst_stripped.split()) > max_words:
+                    # Skip if total assistant word count is too long
+                    total_asst_words = sum(
+                        len(e.get("text", "").split()) for e in asst_entries
+                    )
+                    if max_words > 0 and total_asst_words > max_words:
                         skipped_too_long += 1
                         break
 
-                    turns.append({"role": "user", "content": user_text.strip()})
-                    turns.append({"role": "assistant", "content": asst_stripped})
+                    # Add each user message as a separate turn entry
+                    for ue in user_entries:
+                        text = ue.get("text", "").strip()
+                        if text:
+                            turns.append({"role": "user", "content": text})
+
+                    # Add each assistant message as a separate turn entry
+                    for ae in asst_entries:
+                        text = ae.get("text", "").strip()
+                        if text:
+                            turns.append({"role": "assistant", "content": text})
+
+                    turn_count += 1
 
                 if turns and len(turns) >= 2:
-                    # Validate all turns have content
-                    if all(t["content"] for t in turns):
+                    # Validate: must have at least one user and one assistant
+                    has_user = any(t["role"] == "user" for t in turns)
+                    has_asst = any(t["role"] == "assistant" for t in turns)
+                    if has_user and has_asst and all(t["content"] for t in turns):
                         example = {"messages": turns}
                         out.write(json.dumps(example, ensure_ascii=False) + "\n")
                         pairs_exported += 1
@@ -312,18 +358,22 @@ def export_finetune_data(
         "filtered_messages": filtered_count,
         "pairs_exported": pairs_exported,
         "skipped_too_long": skipped_too_long,
+        "skipped_desync": skipped_desync,
         "conversations_used": len(conversations_used),
         "self_name": self_name,
         "output_file": str(output_path),
         "years": years,
         "language": language,
         "max_words": max_words,
+        "max_reply_gap_min": max_reply_gap_min,
     }
 
     print(f"[export_finetune] Exported {pairs_exported} training examples "
           f"from {len(conversations_used)} conversations → {output_path}")
     if skipped_too_long:
         print(f"  Skipped {skipped_too_long} pairs with assistant reply > {max_words} words")
+    if skipped_desync:
+        print(f"  Skipped {skipped_desync} pairs with reply gap > {max_reply_gap_min} min (desync)")
 
     return stats
 
@@ -339,6 +389,8 @@ if __name__ == "__main__":
     parser.add_argument("--min-words", type=int, default=2, help="Min words per message")
     parser.add_argument("--max-words", type=int, default=200, help="Max words for assistant reply")
     parser.add_argument("--max-turns", type=int, default=1, help="Max turns per example")
+    parser.add_argument("--max-reply-gap", type=int, default=30,
+                        help="Max minutes between user msg and assistant reply (desync guard)")
     args = parser.parse_args()
 
     stats = export_finetune_data(
@@ -349,5 +401,6 @@ if __name__ == "__main__":
         min_words=args.min_words,
         max_words=args.max_words,
         max_turns=args.max_turns,
+        max_reply_gap_min=args.max_reply_gap,
     )
     print(f"\nStats: {json.dumps(stats, indent=2)}")

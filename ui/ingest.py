@@ -155,7 +155,7 @@ def _render_ingestor_section(collection, current_count: int):
         if st.session_state.get(log_key_extract):
             scrollable_log(log_box_extract, st.session_state[log_key_extract], follow=False, title="Extract")
 
-        run_col, _ = st.columns([1, 3])
+        run_col, _ = st.columns([1, 2])
         with run_col:
             if st.button("Run Extract", key="btn_extract", icon=":material/play_arrow:", width="stretch"):
                 extract_script = Path("tools/extract_facebook.py").resolve()
@@ -247,87 +247,88 @@ def _render_ingestor_section(collection, current_count: int):
         )
 
         log_key_ft = "vec_log_finetune"
-        log_box_ft = st.empty()
+
+        if st.button("Export Fine-tune Data", key="btn_finetune",
+                     icon=":material/play_arrow:"):
+            from tools.export_finetune import export_finetune_data
+
+            lines_ft: list[str] = []
+            progress_ft = st.progress(0, text="Exporting fine-tune data…")
+
+            def _ft_cb(current: int, total: int):
+                pct = current / total if total > 0 else 0
+                progress_ft.progress(pct, text=f"Processing conversations… {current:,}/{total:,}")
+
+            try:
+                stats = export_finetune_data(
+                    json_path=ft_json,
+                    output_path=ft_output,
+                    years=ft_years,
+                    language=ft_language,
+                    min_words=ft_min_words,
+                    max_words=ft_max_words,
+                    max_turns=ft_max_turns,
+                    progress_callback=_ft_cb,
+                )
+                progress_ft.empty()
+
+                lines_ft.append(f"Self name: {stats['self_name']}")
+                lines_ft.append(f"Total messages: {stats['total_messages']:,}")
+                lines_ft.append(f"After filtering ({stats['years']}y, {stats['language']}): "
+                                f"{stats['filtered_messages']:,}")
+                lines_ft.append(f"Training examples exported: {stats['pairs_exported']:,}")
+                if stats.get('skipped_too_long'):
+                    lines_ft.append(f"Skipped (reply > {stats['max_words']} words): "
+                                    f"{stats['skipped_too_long']:,}")
+                if stats.get('skipped_desync'):
+                    lines_ft.append(f"Skipped (desync > {stats['max_reply_gap_min']} min): "
+                                    f"{stats['skipped_desync']:,}")
+                lines_ft.append(f"Conversations used: {stats['conversations_used']:,}")
+                lines_ft.append(f"Output: {stats['output_file']}")
+
+                st.session_state[log_key_ft] = lines_ft
+
+                st.success(
+                    f"Exported **{stats['pairs_exported']:,}** training examples "
+                    f"from **{stats['conversations_used']:,}** conversations → "
+                    f"`{stats['output_file']}`"
+                )
+
+                # Show a preview of the first few examples
+                output_p = Path(ft_output)
+                if output_p.exists():
+                    with open(output_p, encoding="utf-8") as pf:
+                        preview_lines = [pf.readline() for _ in range(3)]
+                    preview_lines = [l for l in preview_lines if l.strip()]
+                    if preview_lines:
+                        st.markdown("**Preview (first 3 examples):**")
+                        for pl in preview_lines:
+                            try:
+                                example = json.loads(pl)
+                                msgs = example.get("messages", [])
+                                user_msg = next((m["content"] for m in msgs if m["role"] == "user"), "")
+                                asst_msg = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
+                                st.markdown(
+                                    f'<div style="padding:6px 10px;margin:3px 0;'
+                                    f'border:1px solid rgba(128,128,128,0.25);'
+                                    f'border-radius:6px;font-size:0.85em">'
+                                    f'👤 <b>User:</b> {user_msg[:150]}<br>'
+                                    f'🤖 <b>Assistant:</b> {asst_msg[:150]}</div>',
+                                    unsafe_allow_html=True,
+                                )
+                            except Exception:
+                                pass
+
+            except FileNotFoundError as e:
+                progress_ft.empty()
+                st.error(str(e))
+            except Exception as e:
+                progress_ft.empty()
+                st.error(f"Export failed: {e}")
+
+        # Show persistent log from previous run (no gap when empty)
         if st.session_state.get(log_key_ft):
-            scrollable_log(log_box_ft, st.session_state[log_key_ft], follow=False, title="Fine-tune Export")
-
-        run_col_ft, _ = st.columns([1, 3])
-        with run_col_ft:
-            if st.button("Export Fine-tune Data", key="btn_finetune",
-                         icon=":material/play_arrow:", width="stretch"):
-                from tools.export_finetune import export_finetune_data
-
-                lines_ft: list[str] = []
-                progress_ft = st.progress(0, text="Exporting fine-tune data…")
-
-                def _ft_cb(current: int, total: int):
-                    pct = current / total if total > 0 else 0
-                    progress_ft.progress(pct, text=f"Processing conversations… {current:,}/{total:,}")
-
-                try:
-                    stats = export_finetune_data(
-                        json_path=ft_json,
-                        output_path=ft_output,
-                        years=ft_years,
-                        language=ft_language,
-                        min_words=ft_min_words,
-                        max_words=ft_max_words,
-                        max_turns=ft_max_turns,
-                        progress_callback=_ft_cb,
-                    )
-                    progress_ft.empty()
-
-                    lines_ft.append(f"Self name: {stats['self_name']}")
-                    lines_ft.append(f"Total messages: {stats['total_messages']:,}")
-                    lines_ft.append(f"After filtering ({stats['years']}y, {stats['language']}): "
-                                    f"{stats['filtered_messages']:,}")
-                    lines_ft.append(f"Training examples exported: {stats['pairs_exported']:,}")
-                    if stats.get('skipped_too_long'):
-                        lines_ft.append(f"Skipped (reply > {stats['max_words']} words): "
-                                        f"{stats['skipped_too_long']:,}")
-                    lines_ft.append(f"Conversations used: {stats['conversations_used']:,}")
-                    lines_ft.append(f"Output: {stats['output_file']}")
-
-                    st.session_state[log_key_ft] = lines_ft
-                    scrollable_log(log_box_ft, lines_ft, follow=False, title="Fine-tune Export")
-
-                    st.success(
-                        f"Exported **{stats['pairs_exported']:,}** training examples "
-                        f"from **{stats['conversations_used']:,}** conversations → "
-                        f"`{stats['output_file']}`"
-                    )
-
-                    # Show a preview of the first few examples
-                    output_p = Path(ft_output)
-                    if output_p.exists():
-                        with open(output_p, encoding="utf-8") as pf:
-                            preview_lines = [pf.readline() for _ in range(3)]
-                        preview_lines = [l for l in preview_lines if l.strip()]
-                        if preview_lines:
-                            st.markdown("**Preview (first 3 examples):**")
-                            for pl in preview_lines:
-                                try:
-                                    example = json.loads(pl)
-                                    msgs = example.get("messages", [])
-                                    user_msg = next((m["content"] for m in msgs if m["role"] == "user"), "")
-                                    asst_msg = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
-                                    st.markdown(
-                                        f'<div style="padding:6px 10px;margin:3px 0;'
-                                        f'border:1px solid rgba(128,128,128,0.25);'
-                                        f'border-radius:6px;font-size:0.85em">'
-                                        f'👤 <b>User:</b> {user_msg[:150]}<br>'
-                                        f'🤖 <b>Assistant:</b> {asst_msg[:150]}</div>',
-                                        unsafe_allow_html=True,
-                                    )
-                                except Exception:
-                                    pass
-
-                except FileNotFoundError as e:
-                    progress_ft.empty()
-                    st.error(str(e))
-                except Exception as e:
-                    progress_ft.empty()
-                    st.error(f"Export failed: {e}")
+            scrollable_log(st.container(), st.session_state[log_key_ft], follow=False, title="Fine-tune Export")
 
     # ── STEP 3: LORA FINE-TUNING ──────────────────────────────────────────────
     with st.expander("Step 3 — LoRA Fine-tuning", expanded=False, icon=":material/neurology:"):

@@ -27,3 +27,30 @@ facebook_clean.json
 # IDE
 .vscode/
 .idea/
+
+# OS files
+.DS_Store
+**/.DS_Store
+models/my-lora/README.md
+models/my-lora/checkpoint-400/adapter_config.json
+models/my-lora/checkpoint-400/adapter_model.safetensors
+models/my-lora/checkpoint-400/chat_template.jinja
+models/my-lora/checkpoint-400/optimizer.pt
+models/my-lora/checkpoint-400/README.md
+models/my-lora/checkpoint-400/rng_state.pth
+models/my-lora/checkpoint-400/scheduler.pt
+models/my-lora/checkpoint-400/tokenizer_config.json
+models/my-lora/checkpoint-400/tokenizer.json
+models/my-lora/checkpoint-400/trainer_state.json
+models/my-lora/checkpoint-400/training_args.bin
+models/my-lora/checkpoint-500/adapter_config.json
+models/my-lora/checkpoint-500/adapter_model.safetensors
+models/my-lora/checkpoint-500/chat_template.jinja
+models/my-lora/checkpoint-500/optimizer.pt
+models/my-lora/checkpoint-500/README.md
+models/my-lora/checkpoint-500/rng_state.pth
+models/my-lora/checkpoint-500/scheduler.pt
+models/my-lora/checkpoint-500/tokenizer_config.json
+models/my-lora/checkpoint-500/tokenizer.json
+models/my-lora/checkpoint-500/trainer_state.json
+models/my-lora/checkpoint-500/training_args.bin
