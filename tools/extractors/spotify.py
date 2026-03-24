@@ -4,11 +4,12 @@ tools/extractors/spotify.py
 -----------------------------
 Extract entities and relationships from Spotify streaming history.
 
-Relationships extracted:
-  Person → LISTENED_TO → Artist  (top N artists by play count)
-  Person → LISTENED_TO → Song    (top N songs by play count)
-  Person → INTERESTED_IN → Activity("Music")  (aggregate stats)
-  Person → USED_DEVICE → Device  (per-device play counts)
+Graph model written:
+  (Person)-[:LISTENED]->(Play {ts, ms_played})-[:OF_TRACK]->(Track {title, uri})
+                                                             (Track)-[:BY]->(Artist)
+                                                             (Track)-[:FROM_ALBUM]->(Album)
+  (Person)-[:INTERESTED_IN]->(Activity "Music")  (aggregate stats)
+  (Person)-[:USED_DEVICE]->(Device)              (per-device play counts)
 
 Usage:
   python3 tools/extractors/spotify.py [options]
@@ -16,8 +17,7 @@ Usage:
 Options:
   --data-dir DIR    Path to spotify data folder  [default: data/spotify]
   --self-name NAME  Your name in the graph
-  --top-n N         How many top artists/songs to emit (0 = all)  [default: 0]
-  --dry-run         Print triples without writing to Neo4j
+  --dry-run         Print plays without writing to Neo4j
 """
 
 import argparse
@@ -27,6 +27,8 @@ import re
 import sys
 from collections import Counter
 from pathlib import Path
+
+_BATCH_SIZE = 500
 
 
 # ---------------------------------------------------------------------------
@@ -81,110 +83,156 @@ def _normalize_device(platform: str | None) -> str:
     return platform  # keep raw if nothing matched
 
 
+# ---------------------------------------------------------------------------
+# Batch write
+# ---------------------------------------------------------------------------
+
+_UPSERT_PLAYS_CYPHER = """
+UNWIND $rows AS row
+MERGE (person:Person {name: $self_name})
+MERGE (artist:Artist {name: row.artist})
+MERGE (album:Album   {name: row.album})
+MERGE (track:Track   {uri: row.uri})
+  ON CREATE SET track.title = row.title
+MERGE (play:Play {ts: row.ts})
+  ON CREATE SET play.ms_played = row.ms_played
+MERGE (person)-[:LISTENED]->(play)
+MERGE (play)-[:OF_TRACK]->(track)
+MERGE (track)-[:BY]->(artist)
+MERGE (track)-[:FROM_ALBUM]->(album)
+"""
+
+
+def _write_plays(driver, self_name: str, plays: list[dict]) -> None:
+    """Batch-write Play event nodes to Neo4j using UNWIND."""
+    total = len(plays)
+    written = 0
+    with driver.session() as s:
+        for i in range(0, total, _BATCH_SIZE):
+            batch = plays[i : i + _BATCH_SIZE]
+            s.run(_UPSERT_PLAYS_CYPHER, rows=batch, self_name=self_name)
+            written += len(batch)
+            pct = int(written / total * 100)
+            print(f"PROGRESS: {pct}% | Writing plays {written}/{total}", flush=True)
+    print(f"✅ Written {total:,} Play nodes to Neo4j.", flush=True)
+
+
+def _ensure_play_constraints(driver) -> None:
+    """Add unique constraints for Play and Track nodes (idempotent)."""
+    with driver.session() as s:
+        s.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Play)  REQUIRE n.ts  IS UNIQUE")
+        s.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Track) REQUIRE n.uri IS UNIQUE")
+        s.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Album) REQUIRE n.name IS UNIQUE")
+
+
+# ---------------------------------------------------------------------------
+# Main extract
+# ---------------------------------------------------------------------------
+
 def extract(streams: list[dict], self_name: str,
-            top_n: int = 0, dry_run: bool = False, client=None) -> dict:
+            dry_run: bool = False, client=None) -> dict:
     """
     streams: list of Spotify streaming history records.
     Expected fields: master_metadata_track_name, master_metadata_album_artist_name,
-                     ms_played, platform
+                     master_metadata_album_album_name, spotify_track_uri,
+                     ms_played, platform, ts
     """
-    artist_plays: Counter = Counter()
-    song_plays:   Counter = Counter()
+    plays: list[dict] = []
     device_plays: Counter = Counter()
     total_ms: int = 0
+    skipped = 0
 
     for i, s in enumerate(streams):
         artist = (s.get("master_metadata_album_artist_name") or "").strip()
-        track  = (s.get("master_metadata_track_name")        or "").strip()
+        title  = (s.get("master_metadata_track_name")        or "").strip()
+        album  = (s.get("master_metadata_album_album_name")  or "").strip()
+        uri    = (s.get("spotify_track_uri")                 or "").strip()
         ms     = s.get("ms_played", 0)
-
-        if artist and ms > 30_000:   # only count plays > 30 seconds
-            artist_plays[artist] += 1
-            total_ms += ms
-        if track and artist and ms > 30_000:
-            song_plays[f"{track} — {artist}"] += 1
+        ts     = (s.get("ts") or "").strip()
 
         # Device tracking (count all plays, even short ones)
         device = _normalize_device(s.get("platform"))
         if device != "Unknown":
             device_plays[device] += 1
 
+        if not (artist and title and ts) or ms <= 30_000:
+            skipped += 1
+        else:
+            total_ms += ms
+            # Fallback URI: use title — artist if no Spotify URI
+            if not uri:
+                uri = f"{title} — {artist}"
+            plays.append({
+                "ts":       ts,
+                "ms_played": ms,
+                "title":    title,
+                "uri":      uri,
+                "artist":   artist,
+                "album":    album or "Unknown Album",
+            })
+
         if (i + 1) % 500 == 0 or (i + 1) == len(streams):
             pct = int((i + 1) / len(streams) * 100)
-            print(f"PROGRESS: {pct}% | Analyzing {i+1}/{len(streams)}", flush=True)
+            print(f"PROGRESS: {pct}% | Parsing {i+1}/{len(streams)}", flush=True)
 
-    triples = []
-    n = top_n if top_n > 0 else None          # None = all
-    print(f"\n[ENT] Emitting {'all' if n is None else f'top-{n}'} artists/songs...", flush=True)
-    for artist, count in artist_plays.most_common(n):
-        triples.append({
-            "from_label": "Person", "from_name": self_name,
-            "rel_type":   "LISTENED_TO",
-            "to_label":   "Artist", "to_name": artist,
-            "props":      {"play_count": count},
-        })
-        print(f"[REL] {self_name!r} --LISTENED_TO--> Artist: {artist!r} ({count} plays)", flush=True)
+    # ── Summary stats ──────────────────────────────────────────────────────
+    unique_tracks  = len({p["uri"]    for p in plays})
+    unique_artists = len({p["artist"] for p in plays})
+    total_plays    = len(plays)
+    total_hours    = round(total_ms / 3_600_000, 1)
 
-    for song, count in song_plays.most_common(n):
-        triples.append({
-            "from_label": "Person", "from_name": self_name,
-            "rel_type":   "LISTENED_TO",
-            "to_label":   "Song",   "to_name": song,
-            "props":      {"play_count": count},
-        })
-        print(f"[REL] {self_name!r} --LISTENED_TO--> Song: {song!r} ({count} plays)", flush=True)
-
-    # ── Music Activity node ───────────────────────────────────────────────
-    total_plays = sum(artist_plays.values())
-    total_hours = round(total_ms / 3_600_000, 1)
-    triples.append({
-        "from_label": "Person",   "from_name": self_name,
-        "rel_type":   "INTERESTED_IN",
-        "to_label":   "Activity", "to_name": "Music",
-        "props":      {"total_plays": total_plays, "total_hours": total_hours,
-                       "source": "spotify"},
-    })
-    print(f"[REL] {self_name!r} --INTERESTED_IN--> Activity: 'Music' "
-          f"({total_plays:,} plays, {total_hours:,}h)", flush=True)
-
-    # ── Device nodes ──────────────────────────────────────────────────────
-    for device, count in device_plays.most_common():
-        triples.append({
-            "from_label": "Person", "from_name": self_name,
-            "rel_type":   "USED_DEVICE",
-            "to_label":   "Device", "to_name": device,
-            "props":      {"play_count": count, "source": "spotify"},
-        })
-        print(f"[REL] {self_name!r} --USED_DEVICE--> Device: {device!r} ({count:,} plays)", flush=True)
-
-    print(f"\n📊 Spotify: {len(artist_plays)} unique artists, {len(song_plays)} unique songs, "
-          f"{len(device_plays)} devices", flush=True)
-    emitted_label = "all" if n is None else f"top-{n}"
-    print(f"   → Emitting {emitted_label} each ({len(triples)} triples total)", flush=True)
+    print(f"\n📊 Spotify: {total_plays:,} valid plays, {unique_tracks:,} unique tracks, "
+          f"{unique_artists:,} artists, {total_hours:,}h total", flush=True)
+    print(f"   Skipped: {skipped:,} (too short / missing metadata)", flush=True)
+    print(f"   Devices: {len(device_plays)}", flush=True)
 
     if dry_run:
-        for t in triples[:20]:
-            print(f"  [{t['from_label']}] {t['from_name']!r} "
-                  f"--{t['rel_type']}--> [{t['to_label']}] {t['to_name']!r} "
-                  f"(plays: {t['props'].get('play_count', 0)})")
-    elif client is not None:
-        client.ensure_constraints()
-        client.batch_merge_relations(triples)
-        print("✅ Written to Neo4j.", flush=True)
+        print("\n[DRY RUN] First 20 plays:", flush=True)
+        for p in plays[:20]:
+            date = p["ts"][:10]
+            mins = round(p["ms_played"] / 60_000, 1)
+            print(f"  [Play] {date} | '{p['title']}' by {p['artist']} "
+                  f"({mins}min) → uri={p['uri']!r}", flush=True)
+        return {"LISTENED": total_plays, "tracks": unique_tracks, "artists": unique_artists}
 
-    return {
-        "LISTENED_TO":  len(artist_plays.most_common(n)) + len(song_plays.most_common(n)),
-        "INTERESTED_IN": 1,
-        "USED_DEVICE":   len(device_plays),
-    }
+    if client is not None:
+        # Ensure Play/Track/Album constraints
+        _ensure_play_constraints(client.driver)
+        # Ensure standard entity constraints (Person, Artist, etc.)
+        client.ensure_constraints()
+
+        # Write Play event graph
+        _write_plays(client.driver, self_name, plays)
+
+        # ── Music Activity aggregate node ──────────────────────────────────
+        client.merge_relation(
+            from_label="Person",   from_name=self_name,
+            rel_type="INTERESTED_IN",
+            to_label="Activity",   to_name="Music",
+            props={"total_plays": total_plays, "total_hours": total_hours,
+                   "source": "spotify"},
+        )
+        print(f"[REL] {self_name!r} --INTERESTED_IN--> Activity: 'Music' "
+              f"({total_plays:,} plays, {total_hours:,}h)", flush=True)
+
+        # ── Device nodes ───────────────────────────────────────────────────
+        for device, count in device_plays.most_common():
+            client.merge_relation(
+                from_label="Person", from_name=self_name,
+                rel_type="USED_DEVICE",
+                to_label="Device",   to_name=device,
+                props={"play_count": count, "source": "spotify"},
+            )
+            print(f"[REL] {self_name!r} --USED_DEVICE--> Device: {device!r} "
+                  f"({count:,} plays)", flush=True)
+
+    return {"LISTENED": total_plays, "INTERESTED_IN": 1, "USED_DEVICE": len(device_plays)}
 
 
 def main():
     p = argparse.ArgumentParser(description="Extract KG triples from Spotify history")
     p.add_argument("--data-dir",   default="data/spotify")
     p.add_argument("--self-name",  default=os.environ.get("SELF_NAME", "Me"))
-    p.add_argument("--top-n",      type=int, default=0,
-                   help="How many top artists/songs to emit (0 = all)")
     p.add_argument("--dry-run",    action="store_true")
     p.add_argument("--neo4j-uri",  default=os.environ.get("NEO4J_URI",      "bolt://localhost:7687"))
     p.add_argument("--neo4j-user", default=os.environ.get("NEO4J_USER",     "neo4j"))
@@ -197,7 +245,6 @@ def main():
         sys.exit(1)
 
     streams = []
-    # Try specific pattern first, fall back to all JSON files
     json_files = sorted(data_dir.glob("Streaming_History_Audio_*.json"))
     if not json_files:
         json_files = sorted(data_dir.glob("*.json"))
@@ -211,13 +258,13 @@ def main():
     print(f"📦 {len(streams):,} Spotify streams loaded.", flush=True)
 
     if args.dry_run:
-        extract(streams, args.self_name, top_n=args.top_n, dry_run=True)
+        extract(streams, args.self_name, dry_run=True)
     else:
         project_root = Path(__file__).resolve().parent.parent.parent
         sys.path.insert(0, str(project_root))
         from graph.neo4j_client import Neo4jClient
         with Neo4jClient(args.neo4j_uri, args.neo4j_user, args.neo4j_pass) as client:
-            extract(streams, args.self_name, top_n=args.top_n, client=client)
+            extract(streams, args.self_name, client=client)
 
 
 if __name__ == "__main__":

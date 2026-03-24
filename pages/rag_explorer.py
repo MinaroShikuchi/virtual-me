@@ -17,3 +17,5 @@ def page():
         n_results, top_k, do_rerank, hybrid,
         model, intent_model, ollama_host
     )
+
+page()

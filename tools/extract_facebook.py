@@ -274,19 +274,19 @@ def extract_messages_from_html(
             if not content_div:
                 continue
             
-            # The message text is in nested divs
-            # Structure: <div class="_a6-p"><div><div></div><div>TEXT</div>...
-            nested_divs = content_div.find_all("div", recursive=True)
-            
-            # Extract text from all divs, filtering out empty ones
+            # Remove ul (reactions) from the tree to isolate them
+            reactions = []
+            for ul in content_div.find_all("ul"):
+                react_text = ul.get_text(separator=" ", strip=True)
+                if react_text:
+                    reactions.append(react_text)
+                ul.decompose() # Remove from DOM so it doesn't appear in text extraction
+
+            # Extract text directly using stripped_strings to avoid nested duplication
             text_parts = []
-            for div in nested_divs:
-                # Get direct text content only (not from nested elements)
-                text = div.get_text(separator=" ", strip=True)
-                
-                # Skip empty text and IP addresses (metadata)
+            for text in content_div.stripped_strings:
+                text = text.strip()
                 if text and not text.startswith("IP Address:"):
-                    # Avoid duplicates by checking if this text is already captured
                     if text not in text_parts:
                         text_parts.append(text)
             

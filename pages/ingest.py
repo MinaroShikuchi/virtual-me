@@ -9,3 +9,5 @@ def page():
     render_settings()
     collection, episodic = load_chroma()
     render_vector_tab(collection, episodic)
+
+page()

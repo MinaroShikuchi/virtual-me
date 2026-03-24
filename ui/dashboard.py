@@ -165,7 +165,15 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
     st.divider()
 
     # ── Source cards ──
-    st.markdown("#### Data Sources")
+    hdr_col, btn_col = st.columns([3, 1], vertical_alignment="bottom")
+    hdr_col.markdown("#### Data Sources")
+    with btn_col:
+        st.page_link(
+            "pages/graph.py",
+            label="Platform Extract",
+            icon=":material/manufacturing:",
+            use_container_width=True,
+        )
     cols = st.columns(len(SOURCES))
 
     for col, src in zip(cols, SOURCES):

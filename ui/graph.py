@@ -477,7 +477,7 @@ def _render_extractor_section(alive: bool, uri=None, user=None, password=None):
                                    ["[ENT]", "[REL]", "📊", "✅", "❌",
                                     "🕵", "🏠", "📦", "💼", "📂", "🎮", "⚠️"]):
                                 lines.append(ls)
-                                scrollable_log(log_box, lines[-100:])
+                                scrollable_log(log_box, lines[-2000:])
                         proc.wait()
 
                     pbar.empty()

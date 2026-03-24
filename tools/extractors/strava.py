@@ -324,58 +324,55 @@ def extract(activities: list[dict], self_name: str,
         if lat is None: lat = 0.0
         if lng is None: lng = 0.0
 
-        # 1. Person -> PERFORMED -> Activity
+        # 1. Person -> PERFORMED -> Activity (individual Strava event node)
         triples.append({
             "from_label": "Person",   "from_name": self_name,
             "rel_type":   "PERFORMED",
             "to_label":   "Activity", "to_name": full_id,
             "props": {
-                "id": full_id,
-                "type": act_type,
-                "start": iso_date,
+                "id":           full_id,
+                "name":         act_name,
+                "type":         act_type,
+                "start":        iso_date,
+                "date":         iso_date[:10],
                 "duration_sec": elapsed,
-                "distance_m": dist,
-                "avg_hr": avg_hr,
-                "calories": cals,
-                "source": "strava",
+                "distance_m":   dist,
+                "avg_hr":       avg_hr,
+                "calories":     cals,
+                "source":       "strava",
             },
         })
         counters["PERFORMED"] += 1
-        
-        # 2. Activity -> LOCATED_AT -> Place
-        route_name = act_name if act_name else f"{act_type} Route"
-        
-        # If we have coordinates, try to get a real address
-        place_name = route_name
+
+        dist_km = f"{dist/1000:.1f}km" if dist >= 1000 else f"{dist:.0f}m"
+        dur_min = f"{elapsed//60}min" if elapsed else ""
+        print(f"[REL] {self_name!r} --PERFORMED--> {act_type} \"{act_name}\" "
+              f"[{dist_km}{', ' + dur_min if dur_min else ''}, {iso_date[:10]}]", flush=True)
+
+        # 2. Activity -> LOCATED_AT -> Place (only when we have real GPS coordinates)
         has_geo = False
+        place_name = None
         if abs(lat) > 0.1 and abs(lng) > 0.1:
             addr = geocoder.get_address(lat, lng)
-            if act_id == "14891243176":
-                print(f"      📍 Debug: geocoder returned: {addr!r}", flush=True)
-            
             if addr and not addr.startswith("lat"):
                 place_name = addr
                 has_geo = True
-            elif addr: # fallback lat_lng name
-                place_name = addr
-            else:
-                # Absolute fallback if geocoder returned empty (shouldn't happen with new geo_utils)
-                place_name = f"lat{lat:.6f}_lng{lng:.6f}"
 
-        triples.append({
-            "from_label": "Activity", "from_name": full_id,
-            "rel_type":   "LOCATED_AT",
-            "to_label":   "Place",  "to_name": place_name,
-            "props": {
-                "name": place_name,
-                "lat": lat if lat != 0 else None,
-                "lng": lng if lng != 0 else None
-            }
-        })
-        counters["LOCATED_AT"] += 1
-
-        print(f"[REL] {self_name!r} --PERFORMED--> {full_id!r} [{act_type} {dist:.0f}m]", flush=True)
-        print(f"[REL] {full_id!r} --LOCATED_AT--> {place_name!r}", flush=True)
+        if has_geo:
+            triples.append({
+                "from_label": "Activity", "from_name": full_id,
+                "rel_type":   "LOCATED_AT",
+                "to_label":   "Place",  "to_name": place_name,
+                "props": {
+                    "name": place_name,
+                    "lat": lat,
+                    "lng": lng,
+                }
+            })
+            counters["LOCATED_AT"] += 1
+            print(f"[REL] {act_type} \"{act_name}\" --LOCATED_AT--> {place_name!r}", flush=True)
+        else:
+            print(f"  ⚠️  No GPS for \"{act_name}\" — skipping LOCATED_AT", flush=True)
 
         # 3. Hierarchical Locations (only if geocoded successfully)
         if has_geo:
@@ -416,7 +413,13 @@ def extract(activities: list[dict], self_name: str,
                   f"  {t['props']}")
     elif client is not None:
         client.ensure_constraints()
-        print("✍️ Executing custom Cypher ingestion for Strava schema...", flush=True)
+        # Unique constraint on Activity.id (Strava event nodes are keyed by id)
+        with client.driver.session() as cs:
+            cs.run("CREATE CONSTRAINT IF NOT EXISTS "
+                   "FOR (n:Activity) REQUIRE n.id IS UNIQUE "
+                   "IF NOT EXISTS")
+
+        print("✍️ Writing Strava activities to Neo4j...", flush=True)
         with client.driver.session() as s:
             for t in triples:
                 if t["rel_type"] == "PERFORMED":
@@ -424,14 +427,19 @@ def extract(activities: list[dict], self_name: str,
                     s.run(
                         "MERGE (a:Person {name: $fn}) "
                         "MERGE (act:Activity {id: $act_id}) "
-                        "ON CREATE SET act.name = $act_id, act.type = $type, act.start = datetime($st), "
-                        "act.duration_sec = $dur, act.distance_m = $dist, act.avg_hr = $hr, act.calories = $cal, act.source = $src "
-                        "ON MATCH SET act.name = $act_id, act.type = $type, act.start = datetime($st), "
-                        "act.duration_sec = $dur, act.distance_m = $dist, act.avg_hr = $hr, act.calories = $cal, act.source = $src "
+                        "ON CREATE SET act.name = $act_name, act.type = $type, "
+                        "act.start = $st, act.date = $date, "
+                        "act.duration_sec = $dur, act.distance_m = $dist, "
+                        "act.avg_hr = $hr, act.calories = $cal, act.source = $src "
+                        "ON MATCH SET act.name = $act_name, act.type = $type, "
+                        "act.start = $st, act.date = $date, "
+                        "act.duration_sec = $dur, act.distance_m = $dist, "
+                        "act.avg_hr = $hr, act.calories = $cal, act.source = $src "
                         "MERGE (a)-[:PERFORMED]->(act)",
-                        fn=t["from_name"], act_id=p["id"],
-                        type=p["type"], st=p["start"], dur=p["duration_sec"],
-                        dist=p["distance_m"], hr=p["avg_hr"], cal=p["calories"], src=p["source"]
+                        fn=t["from_name"], act_id=p["id"], act_name=p["name"],
+                        type=p["type"], st=p["start"], date=p["date"],
+                        dur=p["duration_sec"], dist=p["distance_m"],
+                        hr=p["avg_hr"], cal=p["calories"], src=p["source"]
                     )
                 elif t["rel_type"] == "LOCATED_AT":
                     p = t["props"]
@@ -458,7 +466,7 @@ def extract(activities: list[dict], self_name: str,
                         "MERGE (c)-[:IN_COUNTRY]->(co)",
                         cn=t["from_name"], con=t["to_name"]
                     )
-        print("✅ Written custom Strava schema to Neo4j.", flush=True)
+        print("✅ Written Strava activities to Neo4j.", flush=True)
 
     return dict(counters)
 

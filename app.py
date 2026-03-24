@@ -58,6 +58,27 @@ st.markdown("""
         border-radius: 12px;
         margin-bottom: 8px;
     }
+    
+    /* Align USERS to the right, ASSISTANTS to the left */
+    /* stChatMessage: the outer message container */
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) {
+        flex-direction: row-reverse;
+    }
+    /* stChatMessageContent: the inner wrapper for the content */
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stChatMessageContent"] {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        width: 100%;
+    }
+    /* Target the markdown container specifically to ensure it doesn't expand to 100% */
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stMarkdownContainer"] {
+        width: fit-content !important;
+        text-align: right;
+    }
+    [data-testid="stChatMessage"]:has([data-testid="stChatMessageAvatarUser"]) [data-testid="stMarkdownContainer"] p {
+        text-align: right;
+    }
 
     /* RAG card */
     .rag-card {
@@ -98,15 +119,6 @@ st.markdown("""
 from rag.resources import load_chroma
 from ui.sidebar    import render_sidebar
 
-from pages.dashboard      import page as dashboard_page
-from pages.chat           import page as chat_page
-from pages.rag_explorer   import page as rag_explorer_page
-from pages.ingest         import page as ingest_page
-from pages.graph          import page as graph_page
-from pages.entity_browser import page as entity_browser_page
-from pages.personas       import page as personas_page
-
-
 # ── Main ──────────────────────────────────────────────────────────────────────
 def main():
     # Sidebar: connection status
@@ -116,13 +128,14 @@ def main():
     # Navigation (renders in sidebar automatically)
     pg = st.navigation(
         [
-            st.Page(dashboard_page,      title="Dashboard",         url_path="dashboard",  default=True, icon=":material/dashboard:"),
-            st.Page(chat_page,           title="Chat",              url_path="chat",        icon=":material/chat:"),
-            st.Page(ingest_page,         title="Data",              url_path="data",         icon=":material/database:"),
-            st.Page(graph_page,          title="Platform Extract",  url_path="graph",       icon=":material/manufacturing:"),
-            st.Page(rag_explorer_page,   title="RAG Explorer",      url_path="rag",         icon=":material/search:"),
-            st.Page(entity_browser_page, title="Graph Explorer",    url_path="browser",     icon=":material/travel_explore:"),
-            st.Page(personas_page,       title="Personas",          url_path="personas",    icon=":material/groups:"),
+            st.Page("pages/dashboard.py",      title="Dashboard",         url_path="dashboard",  default=True, icon=":material/dashboard:"),
+            st.Page("pages/chat.py",           title="Chat",              url_path="chat",        icon=":material/chat:"),
+            st.Page("pages/ingest.py",         title="Data",              url_path="data",         icon=":material/database:"),
+            st.Page("pages/graph.py",          title="Platform Extract",  url_path="graph",       icon=":material/manufacturing:"),
+            st.Page("pages/rag_explorer.py",   title="RAG Explorer",      url_path="rag",         icon=":material/search:"),
+            st.Page("pages/entity_browser.py", title="Graph Explorer",    url_path="browser",     icon=":material/travel_explore:"),
+            st.Page("pages/personas.py",       title="Personas",          url_path="personas",    icon=":material/groups:"),
+            st.Page("pages/models.py",         title="Models & Adapters", url_path="models",      icon=":material/model_training:"),
         ]
     )
 

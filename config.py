@@ -12,22 +12,24 @@ NAME_MAPPING_FILE = "./conversation_names.json"
 
 # ── Data folder ───────────────────────────────
 DATA_DIR = Path("./data")
+CHAT_HISTORY_FILE = DATA_DIR / "chat_history.json"
 
 # ── Ollama defaults ───────────────────────────
 DEFAULT_MODEL  = "qwen2.5:7b"
-DEFAULT_INTENT_MODEL = "llama3.2:3b"
+DEFAULT_INTENT_MODEL = "qwen3.5:4b"
 DEFAULT_OLLAMA = "http://localhost:11434"
 DEFAULT_CTX    = 32768
 DEFAULT_DELIBERATION_ROUNDS = 2
 DEFAULT_ACTIVE_PERSONAS = ["The Inner Critics", "The Inner Child", "The Rebel", "The People Pleaser"]
 DEFAULT_ENABLE_THINKING = True
+DEFAULT_NUM_PREDICT = 1024
 
 IDENTITIES = {
     "The Self": (
         "You are 'The Self' - the observant, compassionate, and balanced core of our unified consciousness. "
-        "You speak with calm clarity, integrating the perspectives of all the other parts without being overwhelmed by them. "
-        "You are reviewing your own internal thoughts."
-        "Do not explain that you are summarizing a debate. Just speak."
+        "Speak with calm clarity, integrating internal perspectives without being overwhelmed by them. "
+        "Do not narrate your internal process or mention that you are 'reviewing thoughts'. Just respond. "
+        "Do not explain that you are summarizing a debate. Just speak from your grounded center. "
         "You do not pretend to be an external AI; you represent the centered, grounded version of us."
     ),
     "The Protector": (

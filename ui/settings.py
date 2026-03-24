@@ -6,15 +6,21 @@ import ollama
 
 from config import (
     DEFAULT_MODEL, DEFAULT_INTENT_MODEL, DEFAULT_OLLAMA, DEFAULT_CTX, DEFAULT_SYSTEM_PROMPT,
-    DEFAULT_DELIBERATION_ROUNDS, DEFAULT_ACTIVE_PERSONAS, DEFAULT_ENABLE_THINKING,
+    DEFAULT_DELIBERATION_ROUNDS, DEFAULT_ACTIVE_PERSONAS, DEFAULT_ENABLE_THINKING, DEFAULT_NUM_PREDICT,
     IDENTITIES,
     EMBEDDING_MODEL, EMBEDDING_MODELS,
     NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD,
 )
+import json
+import os
+
+SETTINGS_FILE = "settings.json"
+
 
 
 def init_settings_defaults():
-    """Ensure all settings exist in session_state with sensible defaults."""
+    """Ensure all settings exist in session_state with sensible defaults or loaded values."""
+    # 1. Start with hardcoded defaults from config
     defaults = {
         "ollama_host": DEFAULT_OLLAMA,
         "model": DEFAULT_MODEL,
@@ -23,16 +29,29 @@ def init_settings_defaults():
         "deliberation_rounds": DEFAULT_DELIBERATION_ROUNDS,
         "active_personas": DEFAULT_ACTIVE_PERSONAS,
         "enable_thinking": DEFAULT_ENABLE_THINKING,
+        "num_predict": DEFAULT_NUM_PREDICT,
         "system_prompt": DEFAULT_SYSTEM_PROMPT,
         "embedding_model": EMBEDDING_MODEL,
         "n_results": 500,
         "top_k": 100,
         "do_rerank": True,
-        "hybrid": True,
         "neo4j_uri": NEO4J_URI,
         "neo4j_user": NEO4J_USER,
         "neo4j_password": NEO4J_PASSWORD,
+        "enable_condenser": False,
+        "condenser_threshold": 70,
     }
+    
+    # 2. Try to load from disk
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r") as f:
+                saved = json.load(f)
+                defaults.update(saved)
+        except Exception as e:
+            print(f"Error loading settings: {e}")
+
+    # 3. Apply to session state
     for key, val in defaults.items():
         if key not in st.session_state:
             st.session_state[key] = val
@@ -112,14 +131,13 @@ def _settings_dialog():
                 )
 
             with _sys_col2:
-                _ctx = st.select_slider(
-                    "Context window",
-                    options=[8192, 16384, 32768, 65536],
-                    value=st.session_state["draft_num_ctx"],
-                    format_func=lambda x: f"{x // 1024}k",
-                    key="dlg_num_ctx"
-                )
-                st.session_state["draft_num_ctx"] = _ctx
+                _ctx_col1, _ctx_col2 = st.columns(2)
+                with _ctx_col1:
+                    _ctx = st.number_input("Context size", min_value=1024, max_value=128000, value=st.session_state["draft_num_ctx"], step=1024, key="dlg_num_ctx")
+                    st.session_state["draft_num_ctx"] = _ctx
+                with _ctx_col2:
+                    _pred = st.number_input("Max Predict (num_predict)", min_value=-1, max_value=8192, value=st.session_state["draft_num_predict"], step=128, key="dlg_num_predict", help="Maximum number of tokens to predict. -1 for infinity.")
+                    st.session_state["draft_num_predict"] = _pred
                 
                 _think = st.toggle("Enable Thinking Tokens", value=st.session_state["draft_enable_thinking"], key="dlg_enable_thinking")
                 st.session_state["draft_enable_thinking"] = _think
@@ -186,8 +204,19 @@ def _settings_dialog():
                 _drr = st.toggle("Enable reranking", value=st.session_state["draft_do_rerank"], key="dlg_do_rerank")
                 st.session_state["draft_do_rerank"] = _drr
             with r4:
-                _hyb = st.toggle("Hybrid search", value=st.session_state["draft_hybrid"], key="dlg_hybrid")
+                _hyb = st.toggle("Hybrid search", value=st.session_state["draft_hybrid"], key="dlg_hybrid", help="Combines vector search (meaning) with keyword search (BM25) for more accurate results.")
                 st.session_state["draft_hybrid"] = _hyb
+            
+            st.divider()
+            st.markdown("##### 🧬 Auto Context Condenser")
+            st.caption("Automatically summarizes long context using the intent model to save tokens.")
+            
+            _cond = st.toggle("Enable Condenser", value=st.session_state["draft_enable_condenser"], key="dlg_enable_condenser")
+            st.session_state["draft_enable_condenser"] = _cond
+            
+            if _cond:
+                _thr = st.slider("Threshold (%)", min_value=10, max_value=95, value=st.session_state["draft_condenser_threshold"], step=5, key="dlg_condenser_threshold", help="Triggers condensation when context exceeds this % of total context window.")
+                st.session_state["draft_condenser_threshold"] = _thr
 
         elif selected == "🕸️ Neo4j":
             st.markdown("#### :material/hub: Neo4j Settings")
@@ -215,6 +244,7 @@ def _settings_dialog():
         st.session_state["deliberation_rounds"] = st.session_state["draft_deliberation_rounds"]
         st.session_state["active_personas"] = st.session_state["draft_active_personas"]
         st.session_state["enable_thinking"] = st.session_state["draft_enable_thinking"]
+        st.session_state["num_predict"] = st.session_state["draft_num_predict"]
         st.session_state["system_prompt"] = st.session_state["draft_system_prompt"]
         st.session_state["embedding_model"] = st.session_state["draft_embedding_model"]
         st.session_state["n_results"] = st.session_state["draft_n_results"]
@@ -224,6 +254,21 @@ def _settings_dialog():
         st.session_state["neo4j_uri"] = st.session_state["draft_neo4j_uri"]
         st.session_state["neo4j_user"] = st.session_state["draft_neo4j_user"]
         st.session_state["neo4j_password"] = st.session_state["draft_neo4j_password"]
+        st.session_state["enable_condenser"] = st.session_state["draft_enable_condenser"]
+        st.session_state["condenser_threshold"] = st.session_state["draft_condenser_threshold"]
+
+        # Save to disk
+        save_data = {k: st.session_state[k] for k in [
+            "ollama_host", "model", "intent_model", "num_ctx", "deliberation_rounds",
+            "active_personas", "enable_thinking", "num_predict", "system_prompt", "embedding_model",
+            "n_results", "top_k", "do_rerank", "hybrid", "neo4j_uri", "neo4j_user", "neo4j_password",
+            "enable_condenser", "condenser_threshold"
+        ]}
+        try:
+            with open(SETTINGS_FILE, "w") as f:
+                json.dump(save_data, f, indent=2)
+        except Exception as e:
+            st.error(f"Failed to save settings to disk: {e}")
 
         if _emb_changed:
             from rag.resources import load_embedding_func, load_chroma
@@ -241,7 +286,7 @@ def render_settings():
         (model, intent_model, ollama_host, num_ctx, 
          deliberation_rounds, active_personas, enable_thinking, system_prompt, 
          n_results, top_k, do_rerank, hybrid,
-         neo4j_uri, neo4j_user, neo4j_password)
+         neo4j_uri, neo4j_user, neo4j_password, enable_condenser, condenser_threshold)
 
     The settings button itself lives in the sidebar (see ui/sidebar.py).
     """
@@ -254,6 +299,7 @@ def render_settings():
         st.session_state["deliberation_rounds"],
         st.session_state["active_personas"],
         st.session_state["enable_thinking"],
+        st.session_state["num_predict"],
         st.session_state["system_prompt"],
         st.session_state["n_results"],
         st.session_state["top_k"],
@@ -262,4 +308,6 @@ def render_settings():
         st.session_state["neo4j_uri"],
         st.session_state["neo4j_user"],
         st.session_state["neo4j_password"],
+        st.session_state["enable_condenser"],
+        st.session_state["condenser_threshold"],
     )

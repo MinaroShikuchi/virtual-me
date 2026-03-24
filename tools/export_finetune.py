@@ -133,6 +133,7 @@ def export_finetune_data(
     max_words: int = 200,
     max_turns: int = 1,
     max_reply_gap_min: int = 30,
+    filter_reactions: bool = True,
     progress_callback=None,
 ) -> dict:
     """
@@ -212,6 +213,10 @@ def export_finetune_data(
 
         # Type filter — only keep "text" messages (skip system & reaction)
         if m.get("type", "text") != "text":
+            continue
+            
+        # Ignore reactions natively isolated during extraction
+        if filter_reactions and m.get("type", "text") == "reaction":
             continue
 
         # Clean the text
@@ -339,12 +344,11 @@ def export_finetune_data(
                     turn_count += 1
 
                 if turns and len(turns) >= 2:
-                    # Validate: must have at least one user and one assistant
+                    # Validate: must have at least one user and one assistant with content
                     has_user = any(t["role"] == "user" for t in turns)
                     has_asst = any(t["role"] == "assistant" for t in turns)
                     if has_user and has_asst and all(t["content"] for t in turns):
-                        example = {"messages": turns}
-                        out.write(json.dumps(example, ensure_ascii=False) + "\n")
+                        out.write(json.dumps({"conversation": conv, "messages": turns}, ensure_ascii=False) + "\n")
                         pairs_exported += 1
                         conversations_used.add(conv)
 
@@ -391,6 +395,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-turns", type=int, default=1, help="Max turns per example")
     parser.add_argument("--max-reply-gap", type=int, default=30,
                         help="Max minutes between user msg and assistant reply (desync guard)")
+    parser.add_argument("--no-filter-reactions", action="store_true", help="Do not filter out reactions")
     args = parser.parse_args()
 
     stats = export_finetune_data(
@@ -402,5 +407,6 @@ if __name__ == "__main__":
         max_words=args.max_words,
         max_turns=args.max_turns,
         max_reply_gap_min=args.max_reply_gap,
+        filter_reactions=not args.no_filter_reactions,
     )
     print(f"\nStats: {json.dumps(stats, indent=2)}")

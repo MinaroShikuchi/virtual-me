@@ -23,31 +23,56 @@ import json
 import ollama
 
 # ── Intent Router ─────────────────────────────────────────────────────────────
-def analyze_intent(question: str, model: str, host: str, name_to_id: dict) -> dict:
+
+def analyze_intent(question, model, host, name_to_id={}):
     """
-    Pre-flight LLM call to structure the user's intent.
-    Extracts relevant people, locations, and timeframes.
-    Output is strictly JSON:
-      {
-        "people": ["Gabija"],
-        "locations": ["Vilnius", "Paris"],
-        "time_periods": ["2025", "last summer"],
-        "query_type": "factual" | "emotional" | "exploratory"
-      }
+    Returns a dict with extracted intent.
     """
+    from rag.skills import SKILLS_INFO
+    skills_list = list(SKILLS_INFO.keys())
+    skills_desc = "\n".join([f"- {k}: {v}" for k, v in SKILLS_INFO.items()])
+    
     prompt = f"""
 You are an intent router for a personal history database.
 Perform semantic analysis on the user query and extract exactly the people, places, and timeframes mentioned.
-Also, transform the natural language question into a keyword-heavy search query (search_query) that removes conversational filler and focuses only on core entities, actions, and topics to optimize retrieval from a vector and keyword database.
+Also, transform the natural language question into a keyword-heavy search query (search_query) that removes conversational filler and focuses only on core entities, actions, and topics.
 
 Only output valid JSON matching this schema:
 {{
-  "people": [list of person names extracted from the query],
-  "locations": [list of places/locations extracted],
-  "time_periods": [list of dates/years/time expressions],
-  "query_type": "factual" | "emotional" | "exploratory",
-  "search_query": "optimized keyword string for search engines"
+  "people": [list of person names extracted],
+  "locations": [list of places extracted],
+  "time_periods": [list of time expressions],
+  "entities": [list of core objects/topics],
+  "skills": [any of these available IDs: {skills_list}],
+  "query_type": "factual" | "emotional" | "exploratory" | "conversational",
+  "search_query": "optimized keyword string",
+  "needs_retrieval": true or false
 }}
+
+Available skills and when to use them:
+{skills_desc}
+
+### SKILL SELECTION POLICY:
+- If the user asks for "top", "most", "favorite", "frequent", or "highest" items of a category (games, music, apps), you MUST include the corresponding skill ID in the "skills" list.
+- A query can have multiple skills (e.g. "What are my top games and songs?").
+- Even if a skill is used, keep "needs_retrieval": true to allow supplementary keyword search.
+
+### GENERAL RULES:
+- "conversational" queries are ONLY for greetings, small talk, or confirmations. Needs_retrieval: false.
+- ANY query about facts, memories, preferences, or categories MUST have needs_retrieval: true.
+
+FEW-SHOT EXAMPLES:
+User: "hey how are you?"
+JSON: {{ "people": [], "locations": [], "time_periods": [], "entities": [], "skills": [], "query_type": "conversational", "search_query": "", "needs_retrieval": false }}
+
+User: "What kind of game do I like?"
+JSON: {{ "people": [], "locations": [], "time_periods": [], "entities": ["game"], "skills": ["retrieve_most_played_game"], "query_type": "exploratory", "search_query": "video game preferences gaming likes", "needs_retrieval": true }}
+
+User: "What songs do I listen to the most?"
+JSON: {{ "people": [], "locations": [], "time_periods": [], "entities": ["music", "song"], "skills": ["retrieve_top_music"], "query_type": "factual", "search_query": "most played songs favorite music", "needs_retrieval": true }}
+
+User: "Top 3 games and my song preference?"
+JSON: {{ "people": [], "locations": [], "time_periods": [], "entities": ["game", "music", "song"], "skills": ["retrieve_most_played_game", "retrieve_top_music"], "query_type": "factual", "search_query": "top games most played songs", "needs_retrieval": true }}
 
 User query: {question}
 
@@ -200,7 +225,8 @@ def rag_retrieval(question: str, n_results: int,
              top_k: int = 10,
              relevance_threshold: float = 0.0,
              do_rerank: bool = True,
-             hybrid: bool = True):
+             hybrid: bool = True,
+             intent: dict | None = None):
     """
     Returns (docs_list, episodes_list, intent_dict).
 
@@ -219,8 +245,15 @@ def rag_retrieval(question: str, n_results: int,
 
     print(f"\n[RETRIEVE] Query: '{question}'")
 
-    # 1. Intent Analysis
-    intent = analyze_intent(question, "llama3.2:3b", ollama_host, name_to_id)
+    # 1. Intent Analysis (if not pre-computed)
+    if intent is None:
+        intent = analyze_intent(question, model, ollama_host, name_to_id)
+    
+    # 1.5 Early Exit for non-informational queries (Greetings, etc)
+    if not intent.get("needs_retrieval", True):
+        print("  -> Intent: No retrieval needed for this conversation/greeting.")
+        return [], [], intent
+
     
     search_query = intent.get("search_query", "")
     if not search_query or not search_query.strip():

@@ -1,56 +1,30 @@
-# Virtual environment
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
 .venv/
 venv/
+ENV/
+env/
+.env
+.env.*
+!.env.example
 
-# ChromaDB data
-.chroma_data/
-chroma_data/
-
-# Neo4j data
-neo4j_data/
-
-# Python cache
-__pycache__/
-*.pyc
-*.pyo
-
-# Data files (large exports — keep folder structure, ignore payloads)
-data/*
-
-# Legacy root-level data files
-facebook_messages.json
-facebook_clean.json
-
-# App state (discovered identities, etc.)
-.states/
-
-# IDE
+# IDEs
 .vscode/
 .idea/
+*.swp
+*.swo
 
-# OS files
+# OS
 .DS_Store
-**/.DS_Store
-models/my-lora/README.md
-models/my-lora/checkpoint-400/adapter_config.json
-models/my-lora/checkpoint-400/adapter_model.safetensors
-models/my-lora/checkpoint-400/chat_template.jinja
-models/my-lora/checkpoint-400/optimizer.pt
-models/my-lora/checkpoint-400/README.md
-models/my-lora/checkpoint-400/rng_state.pth
-models/my-lora/checkpoint-400/scheduler.pt
-models/my-lora/checkpoint-400/tokenizer_config.json
-models/my-lora/checkpoint-400/tokenizer.json
-models/my-lora/checkpoint-400/trainer_state.json
-models/my-lora/checkpoint-400/training_args.bin
-models/my-lora/checkpoint-500/adapter_config.json
-models/my-lora/checkpoint-500/adapter_model.safetensors
-models/my-lora/checkpoint-500/chat_template.jinja
-models/my-lora/checkpoint-500/optimizer.pt
-models/my-lora/checkpoint-500/README.md
-models/my-lora/checkpoint-500/rng_state.pth
-models/my-lora/checkpoint-500/scheduler.pt
-models/my-lora/checkpoint-500/tokenizer_config.json
-models/my-lora/checkpoint-500/tokenizer.json
-models/my-lora/checkpoint-500/trainer_state.json
-models/my-lora/checkpoint-500/training_args.bin
+Thumbs.db
+
+# RAG/Data (generic)
+data/
+logs/
+output/
+.chroma_data/
+neo4j_data/
+models/
+unsloth_compiled_cache/

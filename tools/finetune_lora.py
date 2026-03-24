@@ -24,74 +24,45 @@ from pathlib import Path
 
 
 # ── Ollama → HuggingFace model mapping ────────────────────────────────────────
-# Maps common Ollama model names (with colon tags) to their HuggingFace repo IDs.
-# This allows users to select from their local Ollama models and have the script
-# automatically resolve to the correct HuggingFace weights for fine-tuning.
-
-_OLLAMA_TO_HF: dict[str, str] = {
-    # Llama 3
-    "llama3:8b":                    "meta-llama/Meta-Llama-3-8B-Instruct",
-    "llama3:8b-instruct":           "meta-llama/Meta-Llama-3-8B-Instruct",
-    "llama3:70b":                   "meta-llama/Meta-Llama-3-70B-Instruct",
-    # Llama 3.1
-    "llama3.1:8b":                  "meta-llama/Llama-3.1-8B-Instruct",
-    "llama3.1:70b":                 "meta-llama/Llama-3.1-70B-Instruct",
-    # Llama 3.2
-    "llama3.2:1b":                  "meta-llama/Llama-3.2-1B-Instruct",
-    "llama3.2:3b":                  "meta-llama/Llama-3.2-3B-Instruct",
-    # Mistral
-    "mistral:7b":                   "mistralai/Mistral-7B-Instruct-v0.3",
-    "mistral:latest":               "mistralai/Mistral-7B-Instruct-v0.3",
-    # Mixtral
-    "mixtral:8x7b":                 "mistralai/Mixtral-8x7B-Instruct-v0.1",
-    # Qwen 3 / 3.5
-    "qwen3:4b":                    "Qwen/Qwen3-4B",
-    "qwen3.5:4b":                  "Qwen/Qwen3-4B",
-    # Qwen 2.5
-    "qwen2.5:0.5b":                "Qwen/Qwen2.5-0.5B-Instruct",
-    "qwen2.5:1.5b":                "Qwen/Qwen2.5-1.5B-Instruct",
-    "qwen2.5:3b":                  "Qwen/Qwen2.5-3B-Instruct",
-    "qwen2.5:7b":                  "Qwen/Qwen2.5-7B-Instruct",
-    "qwen2.5:14b":                 "Qwen/Qwen2.5-14B-Instruct",
-    "qwen2.5:32b":                 "Qwen/Qwen2.5-32B-Instruct",
-    "qwen2.5:72b":                 "Qwen/Qwen2.5-72B-Instruct",
-    # Phi
-    "phi3:mini":                    "microsoft/Phi-3-mini-4k-instruct",
-    "phi3:medium":                  "microsoft/Phi-3-medium-4k-instruct",
-    # Gemma
-    "gemma:2b":                     "google/gemma-2b-it",
-    "gemma:7b":                     "google/gemma-7b-it",
-    "gemma2:2b":                    "google/gemma-2-2b-it",
-    "gemma2:9b":                    "google/gemma-2-9b-it",
-    "gemma2:27b":                   "google/gemma-2-27b-it",
-}
+# This script uses the live HuggingFace Hub (HfApi) to automatically resolve 
+# custom Ollama models to their corresponding HuggingFace repositories.
 
 
 def _resolve_model_name(model_name: str) -> str:
-    """Resolve an Ollama model name to a HuggingFace repo ID.
+    """Resolve an Ollama model name to a HuggingFace repo ID via live API search."""
+    if "huggingface.co/" in model_name:
+        # Extract repo ID from URL (e.g. https://huggingface.co/meta-llama/Llama-2-7b-hf -> meta-llama/Llama-2-7b-hf)
+        repo_id = model_name.split("huggingface.co/")[-1].strip("/")
+        # Remove potential suffixes like /tree/main or /blob/main
+        repo_id = repo_id.split("/tree/")[0].split("/blob/")[0]
+        return repo_id
 
-    If the name contains a colon (Ollama format like ``mistral:7b``),
-    look it up in the mapping table.  If not found, try stripping the
-    tag and matching the base name.  If still not found, return as-is
-    (assumes it's already a HuggingFace ID).
-    """
     if ":" not in model_name and "/" in model_name:
         # Already a HuggingFace repo ID (e.g. "meta-llama/Llama-3-8B")
         return model_name
 
-    # Direct lookup
     lower = model_name.lower().strip()
-    if lower in _OLLAMA_TO_HF:
-        resolved = _OLLAMA_TO_HF[lower]
-        print(f"  Resolved Ollama model '{model_name}' → HuggingFace '{resolved}'", flush=True)
-        return resolved
 
-    # Try without tag (e.g. "mistral:latest" → "mistral")
-    base = lower.split(":")[0]
-    for key, val in _OLLAMA_TO_HF.items():
-        if key.startswith(base + ":") or key == base:
-            print(f"  Resolved Ollama model '{model_name}' → HuggingFace '{val}' (fuzzy match)", flush=True)
-            return val
+    # Try finding it on HuggingFace Hub dynamically!
+    try:
+        from huggingface_hub import HfApi
+        api = HfApi()
+        clean_name = lower.replace(":", "-").replace("_", "-")
+        # Search for this model string in the Hub
+        models = list(api.list_models(search=clean_name, sort="downloads", direction=-1, limit=10))
+        if models:
+            for m in models:
+                # Prefer official text-generation models, avoid gguf/awq/gptq quantized ones
+                name_l = m.id.lower()
+                if "gguf" not in name_l and "awq" not in name_l and "gptq" not in name_l:
+                    print(f"  Dynamic Resolution: Ollama '{model_name}' → HuggingFace '{m.id}'", flush=True)
+                    return m.id
+            
+            # Fallback to the first one if all were quantized
+            print(f"  Dynamic Resolution: Ollama '{model_name}' → HuggingFace '{models[0].id}'", flush=True)
+            return models[0].id
+    except Exception as e:
+         print(f"  WARNING: Hub search failed: {e}", flush=True)
 
     # Not found — return as-is and let HuggingFace handle the error
     print(f"  WARNING: Could not resolve '{model_name}' to a HuggingFace ID. "
@@ -108,7 +79,7 @@ def run_finetune(
     learning_rate: float = 2e-4,
     lora_rank: int = 8,
     lora_alpha: int = 16,
-    lora_dropout: float = 0.05,
+    lora_dropout: float = 0.0,
     max_seq_length: int = 512,
     gradient_accumulation_steps: int = 4,
     warmup_ratio: float = 0.03,
@@ -116,6 +87,8 @@ def run_finetune(
     logging_steps: int = 10,
     use_4bit: bool = True,
     progress_callback=None,
+    ollama_name: str = None,
+    resume: bool = False,
 ):
     """
     Run LoRA fine-tuning on a base model using conversation data.
@@ -186,6 +159,16 @@ def run_finetune(
     # ── Import training libraries ──────────────────────────────────────────
     print("\nLoading libraries…", flush=True)
 
+    # Try Unsloth first (faster training, lower memory)
+    # Unsloth MUST be imported before transformers / trl
+    try:
+        from unsloth import FastLanguageModel
+        _use_unsloth = True
+        print("  Backend: Unsloth (fast path)", flush=True)
+    except ImportError:
+        _use_unsloth = False
+        print("  Backend: HuggingFace (install 'unsloth' for faster training)", flush=True)
+
     try:
         import warnings
         import torch
@@ -201,26 +184,19 @@ def run_finetune(
 
         # Suppress the noisy "pin_memory not supported on MPS" warning
         warnings.filterwarnings("ignore", message=".*pin_memory.*")
+        
+        if not _use_unsloth:
+            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     except ImportError as e:
         print(f"\nERROR: Missing required library: {e}", flush=True)
         print("Install with: pip install transformers peft trl datasets bitsandbytes", flush=True)
         sys.exit(1)
 
-    # Try Unsloth first (faster training, lower memory)
-    try:
-        from unsloth import FastLanguageModel
-        _use_unsloth = True
-        print("  Backend: Unsloth (fast path)", flush=True)
-    except ImportError:
-        from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-        from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-        _use_unsloth = False
-        print("  Backend: HuggingFace (install 'unsloth' for faster training)", flush=True)
-
     # ── Load data ──────────────────────────────────────────────────────────
-    print("Loading training data…", flush=True)
+    print("Loading training data structures…", flush=True)
 
-    examples = []
+    raw_examples = []
     with open(data_file, encoding="utf-8") as f:
         for line in f:
             line = line.strip()
@@ -229,22 +205,10 @@ def run_finetune(
             try:
                 obj = json.loads(line)
                 messages = obj.get("messages", [])
-                # Format as chat template
-                text_parts = []
-                for msg in messages:
-                    role = msg["role"]
-                    content = msg["content"]
-                    if role == "user":
-                        text_parts.append(f"<|user|>\n{content}")
-                    elif role == "assistant":
-                        text_parts.append(f"<|assistant|>\n{content}")
-                if text_parts:
-                    examples.append({"text": "\n".join(text_parts) + "\n<|end|>"})
+                if messages:
+                    raw_examples.append({"messages": messages})
             except (json.JSONDecodeError, KeyError):
                 continue
-
-    dataset = Dataset.from_list(examples)
-    print(f"  Loaded {len(dataset):,} examples into dataset", flush=True)
 
     # ── Load model + configure LoRA ────────────────────────────────────────
     print(f"\nLoading base model: {base_model}…", flush=True)
@@ -338,17 +302,68 @@ def run_finetune(
     print(f"  Trainable parameters: {trainable:,} / {total:,} "
           f"({100 * trainable / total:.2f}%)", flush=True)
 
+    # ── Process dataset with native chat template ────────────────────────
+    print("Formatting dataset with model's native chat template…", flush=True)
+    
+    if _use_unsloth:
+        from unsloth import get_chat_template
+        tokenizer = get_chat_template(
+            tokenizer,
+            chat_template="llama-3", # Defaulting to Llama-3 style as requested (<|user|>)
+        )
+
+    examples = []
+    num_filtered = 0
+    raw_total = len(raw_examples)
+
+    for ex in raw_examples:
+        # Standardize for multi-modal or picky processors: content must be a list of blocks
+        sanitized = []
+        for m in ex["messages"]:
+            content = m.get("content", "")
+            if isinstance(content, str):
+                sanitized.append({"role": m["role"], "content": [{"type": "text", "text": content}]})
+            else:
+                sanitized.append(m)
+
+        # Get the formatted text first (safer than direct binary tokenization)
+        text = tokenizer.apply_chat_template(
+            sanitized, 
+            tokenize=False, 
+            add_generation_prompt=False
+        )
+        
+        # Now count tokens exactly
+        # Note: some processors (like Pixtral) don't have .encode directly, use .tokenizer
+        _tokenizer_obj = getattr(tokenizer, "tokenizer", tokenizer)
+        token_ids = _tokenizer_obj.encode(text, add_special_tokens=False)
+        
+        if len(token_ids) > max_seq_length:
+            num_filtered += 1
+            continue
+            
+        examples.append({"text": text})
+        
+    dataset = Dataset.from_list(examples)
+    print(f"  Processed {raw_total:,} examples:", flush=True)
+    print(f"    - Kept: {len(dataset):,}", flush=True)
+    if num_filtered > 0:
+        print(f"    - Filtered (too long > {max_seq_length}): {num_filtered:,} ⚠️", flush=True)
+
     # ── Training arguments ─────────────────────────────────────────────────
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    # Detect whether we should use bf16 (MPS / newer GPUs) or fp16 (CUDA)
-    _use_fp16 = torch.cuda.is_available()
-    _use_bf16 = (
-        not torch.cuda.is_available()
-        and hasattr(torch.backends, "mps")
-        and torch.backends.mps.is_available()
-    )
+    # Detect whether we should use bf16 (Ampere+ GPUs / MPS) or fp16 (older CUDA)
+    if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+        _use_bf16 = True
+        _use_fp16 = False
+    elif not torch.cuda.is_available() and hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        _use_bf16 = True
+        _use_fp16 = False
+    else:
+        _use_bf16 = False
+        _use_fp16 = torch.cuda.is_available()
 
     # Compute warmup_steps from warmup_ratio (warmup_ratio is deprecated
     # in transformers ≥ v5.2).
@@ -378,34 +393,25 @@ def run_finetune(
         max_length=max_seq_length,
         dataset_text_field="text",
         packing=False,
+        dataset_num_proc=1,  # Force single process to avoid pickling ConfigModuleInstance
     )
 
     # ── Train ──────────────────────────────────────────────────────────────
     print(f"\nStarting training ({epochs} epochs, {num_examples} examples)…", flush=True)
 
-    class _ProgressCallback(TrainerCallback):
-        def on_step_end(self, _args, state, _control, **_kwargs):
-            if state.max_steps:
-                pct = state.global_step / state.max_steps * 100
-                print(
-                    f"  Step {state.global_step}/{state.max_steps} ({pct:.1f}%)"
-                    + (f"  loss={state.log_history[-1]['loss']:.4f}" if state.log_history else ""),
-                    flush=True,
-                )
-                if progress_callback is not None:
-                    progress_callback(state.global_step, state.max_steps)
-
-    callbacks = [_ProgressCallback()]
+    # Note: Using simple string printing, avoiding local unpicklable classes in SFTTrainer
+    if progress_callback:
+        # If external progress tracking is needed, we would need a global callback class
+        pass
 
     trainer = SFTTrainer(
         model=model,
         processing_class=tokenizer,
         train_dataset=dataset,
         args=training_args,
-        callbacks=callbacks or None,
     )
 
-    trainer.train()
+    trainer_stats = trainer.train(resume_from_checkpoint=resume)
 
     # ── Save ───────────────────────────────────────────────────────────────
     print(f"\nSaving LoRA adapter to {output_dir}…", flush=True)
@@ -415,6 +421,24 @@ def run_finetune(
     print(f"\n✅ Fine-tuning complete!", flush=True)
     print(f"  Adapter saved to: {output_dir}", flush=True)
     print(f"  To use: load base model + apply LoRA adapter from {output_dir}", flush=True)
+
+    # ── [OPTIONAL] Auto-Export to Ollama ───────────────────────────
+    if ollama_name:
+        try:
+            from tools.export_to_ollama import export_model
+            print("\n" + "="*60, flush=True)
+            print(f"🚀 Automated pipeline: Exporting and registering as '{ollama_name}' in Ollama...", flush=True)
+            print("="*60 + "\n", flush=True)
+            # The export script handles GGUF conversion and ollama create
+            export_model(
+                adapter_path=str(output_path),
+                out_path=f"{output_dir}-gguf",
+                quant_method="q4_k_m",
+                ollama_name=ollama_name
+            )
+        except Exception as e:
+            print(f"\n⚠️ Auto-export to Ollama failed: {e}", flush=True)
+            print("You can manually export it later.", flush=True)
 
     return {
         "base_model": base_model,
@@ -440,12 +464,22 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-4)
     parser.add_argument("--lora-rank", type=int, default=8)
     parser.add_argument("--lora-alpha", type=int, default=16)
-    parser.add_argument("--lora-dropout", type=float, default=0.05)
+    parser.add_argument("--lora-dropout", type=float, default=0.0)
     parser.add_argument("--max-seq-length", type=int, default=512)
     parser.add_argument("--grad-accum", type=int, default=4)
     parser.add_argument("--no-4bit", action="store_true",
                         help="Disable 4-bit quantization")
+    parser.add_argument("--ollama-name", default=None,
+                        help="If provided, automatically export the adapter to GGUF and register it in Ollama under this name.")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from the latest checkpoint in output_dir if available.")
     args = parser.parse_args()
+
+    print("=" * 60, flush=True)
+    print("SCRIPT PARAMETERS:", flush=True)
+    for k, v in vars(args).items():
+        print(f"  {k}: {v}", flush=True)
+    print("=" * 60, flush=True)
 
     run_finetune(
         base_model=args.base_model,
@@ -460,6 +494,8 @@ def main():
         max_seq_length=args.max_seq_length,
         gradient_accumulation_steps=args.grad_accum,
         use_4bit=not args.no_4bit,
+        ollama_name=args.ollama_name,
+        resume=args.resume,
     )
 
 

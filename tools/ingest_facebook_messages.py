@@ -36,6 +36,7 @@ def ingest_messages(
     session_gap_seconds: int = 8 * 3600,
     max_msgs_per_doc: int = 150,
     reset: bool = True,
+    filter_reactions: bool = True,
 ):
     """
     Ingest Facebook messages into ChromaDB.
@@ -56,8 +57,13 @@ def ingest_messages(
         sys.exit(1)
     with open(json_path) as f:
         messages = json.load(f)
-    
-    print(f"Loaded {len(messages)} messages", flush=True)
+        
+    # Filter out standalone reactions to keep conversational context clean
+    if filter_reactions:
+        messages = [m for m in messages if m.get("type", "text") != "reaction"]
+        print(f"Filtered to {len(messages)} core text messages", flush=True)
+    else:
+        print(f"Loaded {len(messages)} total messages (including reactions)", flush=True)
     
     # --- CONVERSATION SESSION GROUPING (DYNAMIC TEMPO) ---
     print("Grouping messages by conversation using dynamic tempo...", flush=True)
@@ -260,6 +266,8 @@ if __name__ == "__main__":
                         help="Max messages per document chunk")
     parser.add_argument("--reset",        action="store_true",
                         help="Delete and recreate the collection before ingesting")
+    parser.add_argument("--filter-reactions",     action="store_true",
+                        help="Filter out reactions from the dataset before ingestion")
     args = parser.parse_args()
 
     ingest_messages(
@@ -270,4 +278,5 @@ if __name__ == "__main__":
         session_gap_seconds=args.session_gap,
         max_msgs_per_doc=args.max_msgs,
         reset=args.reset,
+        filter_reactions=args.filter_reactions,
     )

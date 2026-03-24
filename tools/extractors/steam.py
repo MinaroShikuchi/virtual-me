@@ -32,9 +32,11 @@ import json
 import os
 import sys
 import time
-from collections import Counter, defaultdict
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+
+_BATCH_SIZE = 500
 
 try:
     import requests
@@ -199,6 +201,39 @@ def load_csv(csv_path: str | Path, limit: int = 0) -> list[dict]:
     return sessions
 
 
+# ── Batch write ───────────────────────────────────────────────────────────────
+
+_UPSERT_SESSIONS_CYPHER = """
+UNWIND $rows AS row
+MERGE (person:Person {name: $self_name})
+MERGE (game:Game {name: row.game})
+MERGE (session:Session {start_at: row.start_at})
+  ON CREATE SET session.end_at       = row.end_at,
+                session.duration_sec = row.duration_sec,
+                session.date         = row.date
+MERGE (person)-[:PLAYED]->(session)
+MERGE (session)-[:OF_GAME]->(game)
+"""
+
+
+def _write_sessions(driver, self_name: str, rows: list[dict]) -> None:
+    total, written = len(rows), 0
+    with driver.session() as s:
+        for i in range(0, total, _BATCH_SIZE):
+            batch = rows[i : i + _BATCH_SIZE]
+            s.run(_UPSERT_SESSIONS_CYPHER, rows=batch, self_name=self_name)
+            written += len(batch)
+            pct = int(written / total * 100)
+            print(f"PROGRESS: {pct}% | Writing sessions {written}/{total}", flush=True)
+    print(f"✅ Written {total:,} Session nodes to Neo4j.", flush=True)
+
+
+def _ensure_session_constraints(driver) -> None:
+    with driver.session() as s:
+        s.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Session) REQUIRE n.start_at IS UNIQUE")
+        s.run("CREATE CONSTRAINT IF NOT EXISTS FOR (n:Game)    REQUIRE n.name     IS UNIQUE")
+
+
 # ── Extraction ────────────────────────────────────────────────────────────────
 
 def extract(sessions: list[dict], self_name: str,
@@ -207,81 +242,90 @@ def extract(sessions: list[dict], self_name: str,
     Extract KG triples from a list of Steam play-session dicts.
 
     Creates:
-      - Person → PLAYED → Game  (with session_count, total_hours)
+      - Person → PLAYED → Session {start_at, end_at, duration_sec, date} → OF_GAME → Game
       - Person → INTERESTED_IN → Activity("Gaming")
     """
-    # Collect unique app IDs and resolve names
     unique_appids = {s["appid"] for s in sessions}
     print(f"  Unique games: {len(unique_appids)}", flush=True)
 
     app_names = _resolve_all_app_names(unique_appids)
 
-    # Aggregate per-game stats
-    game_sessions: Counter = Counter()
+    # Build per-session rows + track per-game aggregates for summary log
+    rows: list[dict] = []
     game_duration: defaultdict[str, float] = defaultdict(float)
+    game_count:    defaultdict[str, int]   = defaultdict(int)
+    game_first:    defaultdict[str, str]   = defaultdict(lambda: "9999")
+    game_last:     defaultdict[str, str]   = defaultdict(lambda: "0")
     total_duration_sec: float = 0
 
     for i, s in enumerate(sessions):
-        appid = s["appid"]
+        appid     = s["appid"]
         game_name = app_names.get(appid, f"Steam App {appid}")
-        dur = s["duration_sec"]
+        dur       = s["duration_sec"]
+        start     = s.get("start_at", "")
+        end       = s.get("end_at", "")
+        date      = start[:10] if start else ""
 
-        game_sessions[game_name] += 1
+        rows.append({"game": game_name, "start_at": start,
+                     "end_at": end, "duration_sec": dur, "date": date})
+
         game_duration[game_name] += dur
-        total_duration_sec += dur
+        game_count[game_name]    += 1
+        total_duration_sec       += dur
+        if start and start < game_first[game_name]:
+            game_first[game_name] = start
+        if end   and end   > game_last[game_name]:
+            game_last[game_name]  = end
 
         if (i + 1) % 500 == 0 or (i + 1) == len(sessions):
             pct = int((i + 1) / len(sessions) * 100)
-            print(f"PROGRESS: {pct}% | Analyzing {i + 1}/{len(sessions)}", flush=True)
+            print(f"PROGRESS: {pct}% | Parsing {i + 1}/{len(sessions)}", flush=True)
 
-    # Build triples
-    triples = []
-
-    for game_name, count in game_sessions.most_common():
+    # Per-game summary
+    total_sessions = len(rows)
+    total_hours    = round(total_duration_sec / 3600, 1)
+    for game_name in sorted(game_duration, key=lambda g: game_duration[g], reverse=True):
         hours = round(game_duration[game_name] / 3600, 1)
-        triples.append({
-            "from_label": "Person", "from_name": self_name,
-            "rel_type": "PLAYED",
-            "to_label": "Game", "to_name": game_name,
-            "props": {"session_count": count, "total_hours": hours, "source": "steam"},
-        })
+        first = game_first[game_name][:10]
+        last  = game_last[game_name][:10]
         print(f"[REL] {self_name!r} --PLAYED--> Game: {game_name!r} "
-              f"({count} sessions, {hours}h)", flush=True)
-
-    # Gaming Activity aggregate node
-    total_sessions = sum(game_sessions.values())
-    total_hours = round(total_duration_sec / 3600, 1)
-    triples.append({
-        "from_label": "Person", "from_name": self_name,
-        "rel_type": "INTERESTED_IN",
-        "to_label": "Activity", "to_name": "Gaming",
-        "props": {
-            "total_sessions": total_sessions,
-            "total_hours": total_hours,
-            "source": "steam",
-        },
-    })
-    print(f"[REL] {self_name!r} --INTERESTED_IN--> Activity: 'Gaming' "
-          f"({total_sessions:,} sessions, {total_hours:,}h)", flush=True)
+              f"({game_count[game_name]} sessions, {hours}h, {first} → {last})", flush=True)
 
     print(f"\n📊 Steam: {len(unique_appids)} unique games, "
           f"{total_sessions:,} sessions, {total_hours:,}h total playtime", flush=True)
-    print(f"   → Emitting {len(triples)} triples", flush=True)
 
     if dry_run:
-        for t in triples[:20]:
-            print(f"  [{t['from_label']}] {t['from_name']!r} "
-                  f"--{t['rel_type']}--> [{t['to_label']}] {t['to_name']!r} "
-                  f"  {t['props']}")
-    elif client is not None:
-        client.ensure_constraints()
-        client.batch_merge_relations(triples)
-        print("✅ Written to Neo4j.", flush=True)
+        print("\n[DRY RUN] First 20 sessions:", flush=True)
+        for r in rows[:20]:
+            mins = round(r["duration_sec"] / 60, 1)
+            print(f"  [Session] {r['date']} | {r['game']!r} ({mins}min)", flush=True)
+        return {"PLAYED": total_sessions, "games": len(unique_appids)}
 
-    return {
-        "PLAYED": len(game_sessions),
-        "INTERESTED_IN": 1,
-    }
+    if client is not None:
+        _ensure_session_constraints(client.driver)
+        client.ensure_constraints()
+
+        _write_sessions(client.driver, self_name, rows)
+
+        # Gaming aggregate
+        all_starts = [v for v in game_first.values() if v != "9999"]
+        all_ends   = [v for v in game_last.values()  if v != "0"]
+        gaming_props: dict = {"total_sessions": total_sessions,
+                               "total_hours": total_hours, "source": "steam"}
+        if all_starts:
+            gaming_props["first_session"] = min(all_starts)[:10]
+        if all_ends:
+            gaming_props["last_session"]  = max(all_ends)[:10]
+        client.merge_relation(
+            from_label="Person", from_name=self_name,
+            rel_type="INTERESTED_IN",
+            to_label="Activity",   to_name="Gaming",
+            props=gaming_props,
+        )
+        print(f"[REL] {self_name!r} --INTERESTED_IN--> Activity: 'Gaming' "
+              f"({total_sessions:,} sessions, {total_hours:,}h)", flush=True)
+
+    return {"PLAYED": total_sessions, "INTERESTED_IN": 1}
 
 
 def main():

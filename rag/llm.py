@@ -21,17 +21,64 @@ def _build_context_string(docs: list, episodes: list, facts: list) -> str:
         )
     return ctx
 
+def condense_context(question: str, raw_context: str, model: str, ollama_host: str) -> tuple[str, str]:
+    """
+    Uses a fast intent model to summarize the context, extracting only the most relevant points.
+    Returns (condensed_text, stats_string).
+    """
+    if not raw_context.strip():
+        return "", "Context was empty."
+        
+    print(f"  -> Context Condenser: Summarizing context using {model}...")
+    prompt = f"""
+You are a context condenser for a memory-augmented AI. 
+The retrieved context below is too long for the current processing window.
+Your task is to summarize the following context into its most relevant points to answer the user's question: "{question}"
+
+Rules:
+1. Maintain all specific dates, names, and key quantitative facts (e.g., song counts, game sessions).
+2. Group related information logically.
+3. Be as concise as possible without losing the 'ground truth' of the data.
+4. If there are conflicting facts (e.g. past vs current relationships), preserve both but label them clearly.
+5. DO NOT return an empty string if the context has content. If unsure, just repeat the most important parts.
+
+RAW CONTEXT:
+{raw_context}
+
+CONDENSED MEMORY SUMMARY:
+""".strip()
+
+    client = ollama.Client(host=ollama_host)
+    try:
+        res = client.chat(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            options={"temperature": 0.0}
+        )
+        result = res["message"]["content"].strip()
+        if not result:
+             return raw_context, "Condenser model returned empty result - using raw."
+        
+        stats = f"Condensed {len(raw_context)} -> {len(result)} chars ({(len(result)/len(raw_context))*100:.1f}%)"
+        return result, stats
+    except Exception as e:
+        print(f"Condenser failed: {e}")
+        return raw_context, f"Condenser failed: {e}"
+
 def _safe_chat(client, kwargs):
     """
-    Executes client.chat(**kwargs). If the model rejects the 'think' parameter,
-    it dynamically strips it and retries.
+    Executes client.chat(**kwargs). If the model rejects the 'think' parameter
+    or 'tools' parameter, it dynamically strips them and retries.
     """
     try:
         return client.chat(**kwargs)
     except ollama.ResponseError as e:
-        if e.status_code == 400 and "does not support thinking" in str(e).lower():
-            if "think" in kwargs:
-                kwargs.pop("think")
+        err_str = str(e).lower()
+        if e.status_code == 400 and "does not support thinking" in err_str:
+            kwargs.pop("think", None)
+            return client.chat(**kwargs)
+        if e.status_code == 400 and ("tool" in err_str or "function" in err_str):
+            kwargs.pop("tools", None)
             return client.chat(**kwargs)
         raise
 
@@ -69,14 +116,18 @@ def translate_to_introspective(question: str, model: str, ollama_host: str) -> s
     prompt = f"""
 You are a perspective translator. Rewrite the user's question from a 2nd-person external query into a 1st-person introspective internal thought.
 Change "you" to "I", "your" to "my", etc.
+If the input is a simple greeting or doesn't have 2nd-person pronouns, leave it alone.
 Do not answer the question. ONLY return the translated text.
 
 Example:
-Input: What do you know about Lois normand?
-Output: What do I know about Lois normand?
+Input: What do you know about photography?
+Output: What do I know about photography?
 
 Input: Where did you travel last year?
 Output: Where did I travel last year?
+
+Input: Hello there!
+Output: Hello there!
 
 Input: {question}
 Output:
@@ -166,15 +217,33 @@ def _build_history_messages(conversation_history: list | None) -> list:
 
 def call_llm(question: str, docs: list, episodes: list, facts: list,
              model: str, ollama_host: str, num_ctx: int, system_prompt: str,
-             enable_thinking: bool = True, conversation_history: list | None = None):
+             enable_thinking: bool = True, num_predict: int = 1024,
+             conversation_history: list | None = None,
+             tool_callback=None,
+             enable_condenser: bool = False,
+             condenser_threshold: int = 70,
+             intent_model: str = "llama3.2"):
     """
-    Returns (thinking, answer, prompt_tokens, completion_tokens).
+    Returns (thinking, answer, prompt_tokens, completion_tokens, duration, context_used, condenser_stats).
+    Supports Ollama native tool calling — if the model invokes a skill, it runs
+    the function, injects the result, and calls the model again for a final answer.
     """
+    from rag.skills import OLLAMA_TOOLS, SKILLS_REGISTRY
+    import json
+
     ctx = _build_context_string(docs, episodes, facts)
+    history_text = "\n".join([m.get("content", "") for m in (conversation_history or [])])
+    total_est = (len(ctx) + len(history_text) + len(system_prompt) + (num_predict * 4)) // 3
+    
+    # Auto Context Condenser
+    condenser_stats = "Not triggered"
+    if enable_condenser and total_est > (num_ctx * condenser_threshold / 100):
+        ctx, condenser_stats = condense_context(question, ctx, intent_model, ollama_host)
+        print(f"[DEBUG] Condenser Stats: {condenser_stats}")
     full_system_prompt = (
         f"{system_prompt}\n\n"
         f"CRITICAL PERSPECTIVE RULE:\n"
-        f"You are the core of our mind. When the context mentions 'Romain', it is talking about US/ME. We are Romain. Always refer to 'Romain' as 'me', 'us', 'we', or 'I'. Never refer to Romain in the third person.\n\n"
+        f"You are the core of my mind. When the context mentions 'Romain', it is talking about ME. I am Romain. Always refer to 'Romain' as 'me' or 'I'. Never refer to 'Romain' in the third person.\n\n"
         f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
         f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
         f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -188,24 +257,99 @@ def call_llm(question: str, docs: list, episodes: list, facts: list,
     messages.append({"role": "user", "content": question})
 
     client = ollama.Client(host=ollama_host)
+    
+    # Tools + thinking mode often conflict — prefer tools when thinking is OFF
+    # When thinking is ON, tools are disabled but we rely on intent-based skill execution
+    use_tools = not enable_thinking
+    
     chat_kwargs = {
         "model": model,
         "messages": messages,
         "stream": False,
-        "options": {"num_ctx": num_ctx},
+        "options": {
+            "num_ctx": num_ctx,
+            "num_predict": num_predict
+        },
     }
+    if use_tools:
+        chat_kwargs["tools"] = OLLAMA_TOOLS
     if enable_thinking:
         chat_kwargs["think"] = True
 
+    import time
+    start_t = time.perf_counter()
     resp = _safe_chat(client, chat_kwargs)
 
-    return _parse_llm_response(resp)
+    # ── Tool Call Handling ────────────────────────────────────────────────────
+    tool_calls = resp.get("message", {}).get("tool_calls", [])
+    if tool_calls:
+        print(f"\n[TOOL CALLING] Model requested {len(tool_calls)} tool(s):")
+        # Append the model's tool-calling message
+        messages.append(resp["message"])
+
+        for tc in tool_calls:
+            name = tc["function"]["name"]
+            raw_args = tc["function"].get("arguments", {})
+            
+            # Normalize arguments
+            if isinstance(raw_args, str):
+                try:
+                    args = json.loads(raw_args)
+                except Exception:
+                    args = {}
+            else:
+                args = raw_args
+            
+            print(f"  -> Tool: {name}({args})")
+            if tool_callback:
+                tool_callback(name, args)
+
+            if name in SKILLS_REGISTRY:
+                try:
+                    result = SKILLS_REGISTRY[name](**args)
+                    result_str = "\n".join(result) if result else "No results found."
+                    print(f"  -> Tool Result ({name}):\n{result_str}")
+                except Exception as e:
+                    result_str = f"Error executing {name}: {e}"
+                    print(f"  -> Tool Error: {e}")
+            else:
+                result_str = f"Unknown tool: {name}"
+
+            # Inject tool result as a tool role message
+            messages.append({
+                "role": "tool",
+                "content": result_str,
+            })
+
+        # Second LLM call with tool results injected
+        chat_kwargs_final = {
+            "model": model,
+            "messages": messages,
+            "stream": False,
+            "options": {
+                "num_ctx": num_ctx,
+                "num_predict": num_predict
+            },
+        }
+        if enable_thinking:
+            chat_kwargs_final["think"] = True
+
+        resp = _safe_chat(client, chat_kwargs_final)
+
+    duration = time.perf_counter() - start_t
+
+    thinking, answer, p_tok, c_tok = _parse_llm_response(resp)
+    return thinking, answer, p_tok, c_tok, duration, ctx, condenser_stats
 
 def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: list,
-                              model: str, ollama_host: str, num_ctx: int,
-                              active_personas: list, deliberation_rounds: int, enable_thinking: bool = True,
-                              update_callback=None, conversation_history: list | None = None,
-                              discovered_identities: dict | None = None):
+                               model: str, ollama_host: str, num_ctx: int,
+                               active_personas: list, deliberation_rounds: int, 
+                               enable_thinking: bool = True, num_predict: int = 1024,
+                               update_callback=None, conversation_history: list | None = None,
+                               discovered_identities: dict | None = None,
+                               enable_condenser: bool = False,
+                               condenser_threshold: int = 70,
+                               intent_model: str = "llama3.2"):
     """
     Returns (thinking, answer, prompt_tokens, completion_tokens, deliberations).
     Deliberations is a list of dicts: {"persona": name, "round": r, "response": text}
@@ -218,7 +362,19 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         discovered personality facets can participate in deliberation.
     """
     ctx = _build_context_string(docs, episodes, facts)
+    history_text = "\n".join([m.get("content", "") for m in (conversation_history or [])])
+    total_est = (len(ctx) + len(history_text) + 1000 + (num_predict * 4)) // 3
+    
+    # Auto Context Condenser
+    condenser_stats = "Not triggered"
+    if enable_condenser and total_est > (num_ctx * condenser_threshold / 100):
+        ctx, condenser_stats = condense_context(question, ctx, intent_model, ollama_host)
+        print(f"[DEBUG] Condenser Stats: {condenser_stats}")
+
     client = ollama.Client(host=ollama_host)
+
+    import time
+    start_t = time.perf_counter()
 
     # Merge hardcoded identities with discovered ones
     all_identities = dict(IDENTITIES)
@@ -251,7 +407,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 f"You are participating in an inner committee to help answer a question. "
                 f"Provide your perspective based on your psychological identity. Keep your answer focused.\n\n"
                 f"CRITICAL PERSPECTIVE RULE:\n"
-                f"You are inside our mind. When the retrieved context (conversations, facts, episodes) mentions 'Romain', it is talking about US. We are Romain. Always refer to 'Romain' as 'us', 'we', or 'I' (from the collective perspective of the system). Never refer to Romain in the third person.\n\n"
+                f"You are inside our mind. When the retrieved context mentions 'Romain', it is talking about US. We are Romain. Always refer to 'Romain' as 'us' or 'we' (representing the collective system). Never refer to Romain in the third person.\n\n"
                 f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
                 f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
                 f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -268,7 +424,10 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
                 "model": model,
                 "messages": persona_messages,
                 "stream": False,
-                "options": {"num_ctx": num_ctx},
+                "options": {
+                    "num_ctx": num_ctx,
+                    "num_predict": num_predict
+                },
             }
             
             print(f"\n{'='*50}\n[DEBUG: INPUT TO {persona.upper()} (ROUND {r})]\n{'='*50}")
@@ -314,7 +473,7 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         f"Now, synthesize a final, balanced, and coherent answer to the user's question, "
         f"taking into account the various perspectives but speaking with one unified voice.\n\n"
         f"CRITICAL PERSPECTIVE RULE:\n"
-        f"You are the core of our mind. When the context or deliberations mention 'Romain', it is talking about US/ME. We are Romain. Always refer to 'Romain' as 'me', 'us', 'we', or 'I'. Never refer to Romain in the third person.\n\n"
+        f"You are the core of our mind. When the context or deliberations mention 'Romain', it is talking about US. We are Romain. Always refer to 'Romain' as 'us' or 'we' (as the unified, balanced voice of this system). Never refer to Romain in the third person.\n\n"
         f"=== RELATIONSHIP INTERPRETATION GUIDE ===\n"
         f"Pay extremely close attention to the tense of semantic facts from the graph.\n"
         f"- 'WAS' or '(PAST relationship)' means the state is HISTORICAL and NO LONGER TRUE.\n"
@@ -331,7 +490,10 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
         "model": model,
         "messages": synthesis_messages,
         "stream": False,
-        "options": {"num_ctx": num_ctx},
+        "options": {
+            "num_ctx": num_ctx,
+            "num_predict": num_predict
+        },
     }
     
     print(f"\n{'='*50}\n[DEBUG: INPUT TO THE SELF (FINAL SYNTHESIS)]\n{'='*50}")
@@ -348,6 +510,8 @@ def deliberate_and_synthesize(question: str, docs: list, episodes: list, facts: 
     total_prompt_tok += p_tok
     total_comp_tok += c_tok
     
+    duration = time.perf_counter() - start_t
+    
     print(f"[THE SELF FINAL ANSWER]:\n{answer}\n{'='*50}")
     
-    return thinking, answer, total_prompt_tok, total_comp_tok, deliberations
+    return thinking, answer, total_prompt_tok, total_comp_tok, deliberations, duration, ctx, condenser_stats
