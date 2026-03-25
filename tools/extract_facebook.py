@@ -124,7 +124,7 @@ _REACTION_RE = re.compile(
     r"^(?:"
     r"You reacted"
     r"|Liked a message"
-    r"|.+ reacted .+ to your message"
+    r"|.*\breacted\b .+ to your message"
     r")",
     re.IGNORECASE,
 )
@@ -164,6 +164,8 @@ _SYSTEM_RE = re.compile(
     r"|Audio call"
     r"|Video call"
     r"|Missed (?:video )?call"
+    r"|The call ended\."
+    r"|.+ joined the (?:audio|video) call"
     r"|Say hi to"
     # ── Media placeholders from HTML export ──
     r"|Click for audio"

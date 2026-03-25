@@ -194,6 +194,17 @@ def render_finetune_tab():
 
     with st.expander("👀 Preview formatted dataset"):
         st.caption("See how your JSONL data will be physically formatted for your selected base model's specific prompt template.")
+        _DEFAULT_SYSTEM_PROMPT = (
+            "You are Romain. You write casually, mix French and English naturally, "
+            "and prefer direct pragmatic answers. Reply as yourself — not as an AI."
+        )
+        preview_system_prompt = st.text_area(
+            "System prompt (clear to use the model's default)",
+            value=_DEFAULT_SYSTEM_PROMPT,
+            key="preview_system_prompt",
+            height=80,
+            help="Clear the field to fall back to the model's built-in default system prompt.",
+        )
         if st.button("Generate Preview", key="btn_format_preview", type="secondary"):
             if not Path(lora_data).exists():
                 st.error(f"Dataset not found at {lora_data}")
@@ -224,14 +235,21 @@ def render_finetune_tab():
                             # Normalize content to plain strings for chat template rendering
                             sanitized_preview = []
                             for m in messages:
+                                if m["role"] == "system":
+                                    continue  # will be re-injected below
                                 content = m.get("content", "")
                                 if isinstance(content, list):
-                                    # Extract text from content blocks (e.g. [{"type": "text", "text": "..."}])
                                     content = "".join(
                                         block.get("text", "") for block in content
                                         if isinstance(block, dict) and block.get("type") == "text"
                                     )
                                 sanitized_preview.append({"role": m["role"], "content": content})
+
+                            # Determine system prompt: UI input > JSONL > none
+                            sys_from_jsonl = next((m["content"] for m in messages if m["role"] == "system"), None)
+                            active_system = preview_system_prompt.strip() or sys_from_jsonl or None
+                            if active_system:
+                                sanitized_preview = [{"role": "system", "content": active_system}] + sanitized_preview
 
                             # Robust chat template check for Base models
                             if tokenizer.chat_template is None:
@@ -239,19 +257,30 @@ def render_finetune_tab():
                                     try:
                                         tokenizer = get_chat_template(
                                             tokenizer,
-                                            chat_template="llama-3", # Defaulting to Llama-3 style as requested (<|user|>)
+                                            chat_template="llama-3",
                                         )
                                     except Exception as ex_templ:
                                         st.warning(f"Unsloth template injection failed: {ex_templ}")
-                                        # Very basic fallback
                                         tokenizer.chat_template = "{% for message in messages %}{{'<|' + message['role'] + '|>\\n' + message['content'] + '<|end|>\\n'}}{% endfor %}"
                                 else:
-                                    # Very basic fallback if unsloth is missing
                                     tokenizer.chat_template = "{% for message in messages %}{{'<|' + message['role'] + '|>\\n' + message['content'] + '<|end|>\\n'}}{% endfor %}"
-                            
+
+                            st.markdown("### System prompt")
+                            if active_system:
+                                st.code(active_system, language=None)
+                            else:
+                                st.caption("*(none — model default will be used)*")
+
+                            st.markdown("### Messages")
+                            for m in sanitized_preview:
+                                if m["role"] == "system":
+                                    continue
+                                with st.chat_message(m["role"]):
+                                    st.write(m["content"])
+
                             formatted_text = tokenizer.apply_chat_template(sanitized_preview, tokenize=False, add_generation_prompt=False)
-                            st.markdown("### 📄 First Entry Preview")
-                            st.code(formatted_text, language="jinja2")
+                            st.markdown("### Formatted token string")
+                            st.code(formatted_text, language=None)
 
                             # ── Dataset Length Distribution & Outlier Analysis ─────────────────────
                             st.markdown("### 📊 Sequence Length Distribution")
@@ -267,22 +296,31 @@ def render_finetune_tab():
                                         obj = json.loads(line)
                                         msgs = obj.get("conversations", obj.get("messages", []))
                                         if msgs:
-                                            # Sanitize for loop analysis too
                                             sanitized_loop = []
                                             for m in msgs:
+                                                if m["role"] == "system":
+                                                    continue
                                                 content = m.get("content", "")
-                                                if isinstance(content, str):
-                                                    sanitized_loop.append({"role": m["role"], "content": [{"type": "text", "text": content}]})
-                                                else:
-                                                    sanitized_loop.append(m)
+                                                if isinstance(content, list):
+                                                    content = "".join(
+                                                        b.get("text", "") for b in content
+                                                        if isinstance(b, dict) and b.get("type") == "text"
+                                                    )
+                                                sanitized_loop.append({"role": m["role"], "content": content})
+                                            if active_system:
+                                                sanitized_loop = [{"role": "system", "content": active_system}] + sanitized_loop
 
                                             # Estimate length via template + exact tokenization
                                             t_text = tokenizer.apply_chat_template(sanitized_loop, tokenize=False, add_generation_prompt=False)
                                             _tok_obj = getattr(tokenizer, "tokenizer", tokenizer)
                                             tokens = len(_tok_obj.encode(t_text, add_special_tokens=False))
                                             all_lengths.append(tokens)
-                                            # Track for outliers (we will sort later)
-                                            outliers.append((i, tokens, t_text[:100] + "..."))
+                                            msg_snippet = " / ".join(
+                                                f"[{m['role']}] {m['content'][:80]}"
+                                                for m in sanitized_loop
+                                                if m["role"] != "system"
+                                            )
+                                            outliers.append((i, tokens, msg_snippet))
                                     except: continue
                             
                             if all_lengths:
@@ -350,7 +388,7 @@ def render_finetune_tab():
                     pass
         if _metrics:
             _df = pd.DataFrame(_metrics).set_index("Epoch")
-            chart_box_lora.line_chart(_df, y="Loss", use_container_width=True)
+            chart_box_lora.line_chart(_df, y="Loss", width="stretch")
 
     if _lines:
         scrollable_log(log_box_lora, _lines[-2000:], title="LoRA Training")
@@ -449,7 +487,7 @@ def render_export_tab():
         quant_method = st.selectbox("Quantization", ["q4_k_m", "q8_0", "f16"], index=0, help="4-bit (q4_k_m) is standard for local GPUs.")
         
         st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🚀 Compile to Ollama", type="primary", use_container_width=True):
+        if st.button("🚀 Compile to Ollama", type="primary", width="stretch"):
             try:
                 from tools.export_to_ollama import export_model
             except ImportError:

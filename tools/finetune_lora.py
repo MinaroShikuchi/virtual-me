@@ -476,6 +476,8 @@ def main():
     args = parser.parse_args()
 
     print("=" * 60, flush=True)
+    print("COMMAND LINE:", flush=True)
+    print("  " + " ".join(sys.argv), flush=True)
     print("SCRIPT PARAMETERS:", flush=True)
     for k, v in vars(args).items():
         print(f"  {k}: {v}", flush=True)

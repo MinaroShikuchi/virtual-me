@@ -238,10 +238,30 @@ def _render_ingestor_section(collection, current_count: int):
                 help="1 = single user→assistant pair. "
                      "2+ = multi-turn conversations per training example.",
             )
+            ft_max_reply_gap = st.number_input(
+                "Max gap between discussions (min)",
+                min_value=1, max_value=1440, value=30, step=5,
+                key="ft_max_reply_gap",
+                help="If the gap between the last user message and your first reply exceeds this, "
+                     "the exchange is considered a different discussion and skipped.",
+            )
             ft_filter_reactions = st.checkbox(
                 "Filter out reactions", value=True, key="ft_filter_reactions",
                 help="If checked, standalone Facebook reactions are excluded from the training data."
             )
+
+        _DEFAULT_SYSTEM_PROMPT = (
+            "You are Romain. You write casually, mix French and English naturally, "
+            "and prefer direct pragmatic answers. Reply as yourself — not as an AI."
+        )
+        ft_system_prompt = st.text_area(
+            "System prompt (clear to use the model's default)",
+            value=_DEFAULT_SYSTEM_PROMPT,
+            key="ft_system_prompt",
+            height=100,
+            help="Prepended as a system message to every training example. "
+                 "Clear the field to train without a system prompt (model default will be used).",
+        )
 
         st.caption(
             "**Format:** `{\"messages\": [{\"role\": \"user\", \"content\": \"...\"}, "
@@ -252,87 +272,9 @@ def _render_ingestor_section(collection, current_count: int):
 
         log_key_ft = "vec_log_finetune"
 
-        if st.button("Export Fine-tune Data", key="btn_finetune",
-                     icon=":material/play_arrow:"):
-            from tools.export_finetune import export_finetune_data
-
-            lines_ft: list[str] = []
-            progress_ft = st.progress(0, text="Exporting fine-tune data…")
-
-            def _ft_cb(current: int, total: int):
-                pct = current / total if total > 0 else 0
-                progress_ft.progress(pct, text=f"Processing conversations… {current:,}/{total:,}")
-
-            try:
-                stats = export_finetune_data(
-                    json_path=ft_json,
-                    output_path=ft_output,
-                    years=ft_years,
-                    language=ft_language,
-                    min_words=ft_min_words,
-                    max_words=ft_max_words,
-                    max_turns=ft_max_turns,
-                    progress_callback=_ft_cb,
-                )
-                progress_ft.empty()
-
-                lines_ft.append(f"Self name: {stats['self_name']}")
-                lines_ft.append(f"Total messages: {stats['total_messages']:,}")
-                lines_ft.append(f"After filtering ({stats['years']}y, {stats['language']}): "
-                                f"{stats['filtered_messages']:,}")
-                lines_ft.append(f"Training examples exported: {stats['pairs_exported']:,}")
-                if stats.get('skipped_too_long'):
-                    lines_ft.append(f"Skipped (reply > {stats['max_words']} words): "
-                                    f"{stats['skipped_too_long']:,}")
-                if stats.get('skipped_desync'):
-                    lines_ft.append(f"Skipped (desync > {stats['max_reply_gap_min']} min): "
-                                    f"{stats['skipped_desync']:,}")
-                lines_ft.append(f"Conversations used: {stats['conversations_used']:,}")
-                lines_ft.append(f"Output: {stats['output_file']}")
-
-                st.session_state[log_key_ft] = lines_ft
-
-                st.success(
-                    f"Exported **{stats['pairs_exported']:,}** training examples "
-                    f"from **{stats['conversations_used']:,}** conversations → "
-                    f"`{stats['output_file']}`"
-                )
-
-                # Show a preview of the first few examples
-                output_p = Path(ft_output)
-                if output_p.exists():
-                    with open(output_p, encoding="utf-8") as pf:
-                        preview_lines = [pf.readline() for _ in range(3)]
-                    preview_lines = [l for l in preview_lines if l.strip()]
-                    if preview_lines:
-                        st.markdown("**Preview (first 3 examples):**")
-                        for pl in preview_lines:
-                            try:
-                                example = json.loads(pl)
-                                msgs = example.get("messages", [])
-                                user_msg = next((m["content"] for m in msgs if m["role"] == "user"), "")
-                                asst_msg = next((m["content"] for m in msgs if m["role"] == "assistant"), "")
-                                st.markdown(
-                                    f'<div style="padding:6px 10px;margin:3px 0;'
-                                    f'border:1px solid rgba(128,128,128,0.25);'
-                                    f'border-radius:6px;font-size:0.85em">'
-                                    f'👤 <b>User:</b> {user_msg[:150]}<br>'
-                                    f'🤖 <b>Assistant:</b> {asst_msg[:150]}</div>',
-                                    unsafe_allow_html=True,
-                                )
-                            except Exception:
-                                pass
-
-            except FileNotFoundError as e:
-                progress_ft.empty()
-                st.error(str(e))
-            except Exception as e:
-                progress_ft.empty()
-                st.error(f"Export failed: {e}")
-
-        # Show persistent log from previous run (no gap when empty)
+        log_box_ft = st.empty()
         if st.session_state.get(log_key_ft):
-            scrollable_log(st.container(), st.session_state[log_key_ft], follow=False, title="Fine-tune Export")
+            scrollable_log(log_box_ft, st.session_state[log_key_ft], follow=False, title="Fine-tune Export")
 
         run_col_ft, _ = st.columns([1, 3])
         with run_col_ft:
@@ -357,7 +299,9 @@ def _render_ingestor_section(collection, current_count: int):
                     min_words=ft_min_words,
                     max_words=ft_max_words,
                     max_turns=ft_max_turns,
+                    max_reply_gap_min=ft_max_reply_gap,
                     filter_reactions=ft_filter_reactions,
+                    system_prompt=ft_system_prompt.strip() or None,
                     progress_callback=_ft_cb,
                 )
                 progress_ft.empty()
@@ -374,7 +318,7 @@ def _render_ingestor_section(collection, current_count: int):
                 lines_ft.append(f"Output: {stats['output_file']}")
 
                 st.session_state[log_key_ft] = lines_ft
-                scrollable_log(st.container(), lines_ft, follow=False, title="Fine-tune Export")
+                scrollable_log(log_box_ft, lines_ft, follow=False, title="Fine-tune Export")
 
                 st.success(
                     f"Exported **{stats['pairs_exported']:,}** training examples "
@@ -395,9 +339,57 @@ def _render_ingestor_section(collection, current_count: int):
         output_p = Path(ft_output)
         if output_p.exists():
             st.divider()
+
+            # ── Token distribution chart ──────────────────────────────────
+            @st.cache_data(show_spinner=False)
+            def _load_token_stats(filepath, mtime):
+                import json
+                rows = []
+                try:
+                    with open(filepath, "r", encoding="utf-8") as f:
+                        for line in f:
+                            if not line.strip():
+                                continue
+                            ex = json.loads(line)
+                            tokens = sum(
+                                len(m.get("content", "")) // 4
+                                for m in ex.get("messages", [])
+                            )
+                            rows.append((ex.get("conversation") or "Unknown", tokens))
+                except Exception:
+                    pass
+                return rows
+
+            token_rows = _load_token_stats(str(output_p), os.path.getmtime(output_p))
+            if token_rows:
+                import plotly.graph_objects as go
+                sorted_rows = sorted(token_rows, key=lambda x: x[1], reverse=True)
+                y_tokens = [r[1] for r in sorted_rows]
+                hover_convs = [r[0] for r in sorted_rows]
+                fig_tok = go.Figure(data=[
+                    go.Bar(
+                        x=list(range(len(y_tokens))),
+                        y=y_tokens,
+                        marker_color="#6366f1",
+                        hovertemplate="Row %{x}<br><b>%{customdata}</b><br>~%{y:,} tokens<extra></extra>",
+                        customdata=hover_convs,
+                    )
+                ])
+                fig_tok.update_layout(
+                    title=f"Tokens per dataset row (estimated) — {len(y_tokens):,} rows",
+                    title_font=dict(size=14, color="#e2e8f0"),
+                    xaxis=dict(title="Dataset rows (sorted by tokens)", gridcolor="#333", showticklabels=False),
+                    yaxis=dict(title="Approx. tokens", gridcolor="#333"),
+                    paper_bgcolor="rgba(0,0,0,0)",
+                    plot_bgcolor="rgba(0,0,0,0)",
+                    margin=dict(l=40, r=20, t=40, b=20),
+                    height=300,
+                )
+                st.plotly_chart(fig_tok, width="stretch")
+
             st.markdown("### Interactive Dataset Preview")
             st.caption("*(Note: To see the effects of changing settings like Max Turns, you must click **Export** again to regenerate the file!)*")
-            
+
             @st.cache_data(show_spinner=False)
             def _load_preview_data(filepath, mtime):
                 import json
@@ -435,7 +427,7 @@ def _render_ingestor_section(collection, current_count: int):
                     )
                 with p_col2:
                     st.markdown("<div style='margin-top: 28px'></div>", unsafe_allow_html=True)
-                    if st.button("Next Example", key="btn_next_ex", use_container_width=True):
+                    if st.button("Next Example", key="btn_next_ex", width="stretch"):
                         st.session_state.preview_idx += 1
                         
                 if selected_conv != st.session_state.preview_conv:

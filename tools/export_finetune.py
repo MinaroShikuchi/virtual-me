@@ -10,10 +10,9 @@ extraction in ``extract_facebook.py``) are excluded — only ``"type": "text"``
 messages are kept.
 
 **Consecutive messages**: When the same person sends several messages in a
-row (e.g. two quick texts before the other person replies), each message is
-kept as a separate entry with the same role.  This preserves the natural
-burst-messaging pattern and is valid for HuggingFace/``trl`` fine-tuning
-(only OpenAI's API requires strict role alternation).
+row (e.g. two quick texts before the other person replies), they are merged
+into a single turn separated by a space.  This guarantees strict
+user → assistant alternation required for fine-tuning.
 
 A **desync guard** skips user→assistant exchanges where the assistant's first
 reply timestamp is more than 30 minutes after the user's last message, which
@@ -80,7 +79,11 @@ _FB_ARTIFACT_RE = re.compile(
     r"Say hi to your new Facebook friend|"
     r"waved at you|"
     r"This person is unavailable|"
-    r"Click for audio|Click for video)",
+    r"Click for audio|Click for video|"
+    r"The call ended\.|"
+    r".+ joined the (?:audio|video) call|"
+    r".*\breacted\b .+ to your message|"
+    r"You reacted)",
     re.IGNORECASE,
 )
 
@@ -88,6 +91,8 @@ _FB_ARTIFACT_RE = re.compile(
 def _clean_message(text: str) -> str:
     """Clean a message for fine-tuning: strip URLs, normalize whitespace."""
     text = _URL_RE.sub("", text).strip()
+    # Strip Facebook "(edited)" annotation
+    text = re.sub(r"\s*\(edited\)\s*$", "", text, flags=re.IGNORECASE).strip()
     # Collapse multiple spaces/newlines
     text = re.sub(r"\s+", " ", text).strip()
     return text
@@ -134,6 +139,7 @@ def export_finetune_data(
     max_turns: int = 1,
     max_reply_gap_min: int = 30,
     filter_reactions: bool = True,
+    system_prompt: str | None = None,
     progress_callback=None,
 ) -> dict:
     """
@@ -321,25 +327,32 @@ def export_finetune_data(
                         asst_entries.append(msgs[j])
                         j += 1
 
-                    # Skip if total assistant word count is too long
+                    # Skip if total user or assistant word count is too long
+                    total_user_words = sum(
+                        len(e.get("text", "").split()) for e in user_entries
+                    )
                     total_asst_words = sum(
                         len(e.get("text", "").split()) for e in asst_entries
                     )
-                    if max_words > 0 and total_asst_words > max_words:
+                    if max_words > 0 and (total_user_words > max_words or total_asst_words > max_words):
                         skipped_too_long += 1
                         break
 
-                    # Add each user message as a separate turn entry
-                    for ue in user_entries:
-                        text = ue.get("text", "").strip()
-                        if text:
-                            turns.append({"role": "user", "content": text})
+                    # Merge consecutive user messages into one turn (strict alternation)
+                    user_text = " ".join(
+                        ue.get("text", "").strip() for ue in user_entries
+                        if ue.get("text", "").strip()
+                    )
+                    if user_text:
+                        turns.append({"role": "user", "content": user_text})
 
-                    # Add each assistant message as a separate turn entry
-                    for ae in asst_entries:
-                        text = ae.get("text", "").strip()
-                        if text:
-                            turns.append({"role": "assistant", "content": text})
+                    # Merge consecutive assistant messages into one turn (strict alternation)
+                    asst_text = " ".join(
+                        ae.get("text", "").strip() for ae in asst_entries
+                        if ae.get("text", "").strip()
+                    )
+                    if asst_text:
+                        turns.append({"role": "assistant", "content": asst_text})
 
                     turn_count += 1
 
@@ -348,7 +361,10 @@ def export_finetune_data(
                     has_user = any(t["role"] == "user" for t in turns)
                     has_asst = any(t["role"] == "assistant" for t in turns)
                     if has_user and has_asst and all(t["content"] for t in turns):
-                        out.write(json.dumps({"conversation": conv, "messages": turns}, ensure_ascii=False) + "\n")
+                        messages = turns
+                        if system_prompt:
+                            messages = [{"role": "system", "content": system_prompt}] + turns
+                        out.write(json.dumps({"conversation": conv, "messages": messages}, ensure_ascii=False) + "\n")
                         pairs_exported += 1
                         conversations_used.add(conv)
 
@@ -396,6 +412,7 @@ if __name__ == "__main__":
     parser.add_argument("--max-reply-gap", type=int, default=30,
                         help="Max minutes between user msg and assistant reply (desync guard)")
     parser.add_argument("--no-filter-reactions", action="store_true", help="Do not filter out reactions")
+    parser.add_argument("--system-prompt", default=None, help="System prompt prepended to every training example")
     args = parser.parse_args()
 
     stats = export_finetune_data(
@@ -408,5 +425,6 @@ if __name__ == "__main__":
         max_turns=args.max_turns,
         max_reply_gap_min=args.max_reply_gap,
         filter_reactions=not args.no_filter_reactions,
+        system_prompt=args.system_prompt,
     )
     print(f"\nStats: {json.dumps(stats, indent=2)}")

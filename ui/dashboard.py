@@ -172,7 +172,7 @@ def render_dashboard_tab(collection, neo4j_uri=None, neo4j_user=None, neo4j_pass
             "pages/graph.py",
             label="Platform Extract",
             icon=":material/manufacturing:",
-            use_container_width=True,
+            width="stretch",
         )
     cols = st.columns(len(SOURCES))
 

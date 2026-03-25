@@ -214,7 +214,7 @@ def render_personas_page():
             classify_btn = st.button(
                 classify_label,
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
         elif is_direct_vad_mode:
             classify_btn = False
@@ -225,7 +225,7 @@ def render_personas_page():
             vad_direct_btn = st.button(
                 vad_direct_label,
                 type="primary",
-                use_container_width=True,
+                width="stretch",
             )
         elif is_llm_vad_mode:
             classify_btn = False
@@ -236,13 +236,13 @@ def render_personas_page():
             llm_vad_btn = st.button(
                 llm_vad_label,
                 type="primary",
-                use_container_width=True,
+                width="stretch",
                 disabled=not selected_convs,  # type: ignore[possibly-undefined]
             )
         else:
             classify_btn = False
             embed_label = "🔄 Re-embed" if _has_vectors() else "🚀 Load & Embed Messages"
-            embed_btn = st.button(embed_label, type="primary", use_container_width=True)
+            embed_btn = st.button(embed_label, type="primary", width="stretch")
 
     # Build excluded languages set from checkboxes
     excluded_langs: set[str] = set()
@@ -326,7 +326,7 @@ def render_personas_page():
         st.write("")  # spacer
         analyse_btn = st.button(
             "🔍 Analyse K range" if not _has_k_analysis() else "🔄 Re-analyse",
-            use_container_width=True,
+            width="stretch",
         )
 
     if analyse_btn:
@@ -353,7 +353,7 @@ def render_personas_page():
         cluster_btn = st.button(
             "🚀 Run Clustering" if not _has_clusters() else "🔄 Re-cluster",
             type="primary",
-            use_container_width=True,
+            width="stretch",
         )
 
     if cluster_btn:
@@ -520,7 +520,7 @@ def render_personas_page():
         st.write("")  # spacer
         sub_cluster_btn = st.button(
             "🔬 Run Sub-Clustering",
-            use_container_width=True,
+            width="stretch",
             key="_run_sub_cluster",
         )
 
@@ -590,7 +590,7 @@ def render_personas_page():
             st.warning(f"⚠️ Total = {total:.2f} — must equal 1.0 (off by {total - 1.0:+.2f})")
 
     with col_action:
-        if st.button("⚖️ Auto-normalize", use_container_width=True):
+        if st.button("⚖️ Auto-normalize", width="stretch"):
             if total > 0:
                 normalized = [round(w / total, 3) for w in weights]
                 st.session_state["persona_weights"] = normalized
@@ -611,7 +611,7 @@ def render_personas_page():
     # Save button
     st.markdown("---")
     persona_name = st.text_input("Persona name", value="My Persona", key="_persona_name")
-    if st.button("💾 Save Persona", type="primary", use_container_width=True):
+    if st.button("💾 Save Persona", type="primary", width="stretch"):
         if abs(total - 1.0) > 0.01:
             st.error("Weights must sum to 1.0 before saving.")
         else:
@@ -1602,7 +1602,7 @@ def _render_sub_clusters(cluster_id: int):
                 if st.button(
                     "🤖 Generate Personality",
                     key=gen_key,
-                    use_container_width=True,
+                    width="stretch",
                     help="Use LLM to generate a personality description from these messages.",
                 ):
                     try:
@@ -1649,7 +1649,7 @@ def _render_sub_clusters(cluster_id: int):
                         "💾 Save as Identity",
                         key=f"_save_identity_{cluster_id}_{sc}",
                         type="primary",
-                        use_container_width=True,
+                        width="stretch",
                     ):
                         save_discovered_identity(
                             name=identity_name,

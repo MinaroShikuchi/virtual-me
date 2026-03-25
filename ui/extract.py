@@ -374,7 +374,7 @@ def _render_interest_chart(chart_key: str) -> None:
         )
         top = categories[0] if categories else "—"
         st.markdown(f"#### :material/radar: Interest Profile  ·  Top: **{top.capitalize()}**")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
     except ImportError:
         st.info("Install plotly to see the interest chart.")
     except Exception as e:
