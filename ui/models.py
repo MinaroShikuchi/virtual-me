@@ -18,9 +18,12 @@ from ui.components.log_viewer import scrollable_log
 
 # Unsloth MUST be imported before transformers/peft to avoid warnings and speed regressions
 try:
-    import unsloth
-    from unsloth import get_chat_template
-except ImportError:
+    import warnings as _w
+    with _w.catch_warnings():
+        _w.filterwarnings("ignore", message=".*Unsloth should be imported before.*")
+        import unsloth
+        from unsloth import get_chat_template
+except (ImportError, NotImplementedError):
     unsloth = None
     get_chat_template = None
 
@@ -167,6 +170,13 @@ def render_finetune_tab():
             min_value=1, max_value=32, value=4, step=1,
             key="lora_grad_accum",
             help="Effective batch = batch_size × this.",
+        )
+        lora_save_steps = st.number_input(
+            "Save checkpoint every N steps",
+            min_value=10, max_value=1000, value=100, step=10,
+            key="lora_save_steps",
+            help="Save a checkpoint every N training steps. Lower values = more checkpoints "
+                 "to compare, but uses more disk space.",
         )
         lora_4bit = st.checkbox(
             "Use 4-bit quantization (QLoRA)",
@@ -413,6 +423,7 @@ def render_finetune_tab():
                     "--lora-alpha", str(lora_alpha),
                     "--max-seq-length", str(lora_max_seq),
                     "--grad-accum", str(lora_grad_accum),
+                    "--save-steps", str(lora_save_steps),
                 ]
                 if not lora_4bit:
                     cmd.append("--no-4bit")

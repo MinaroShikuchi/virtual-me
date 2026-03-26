@@ -35,6 +35,7 @@ def init_settings_defaults():
         "n_results": 500,
         "top_k": 100,
         "do_rerank": True,
+        "hybrid": True,
         "neo4j_uri": NEO4J_URI,
         "neo4j_user": NEO4J_USER,
         "neo4j_password": NEO4J_PASSWORD,

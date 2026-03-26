@@ -165,7 +165,7 @@ def run_finetune(
         from unsloth import FastLanguageModel
         _use_unsloth = True
         print("  Backend: Unsloth (fast path)", flush=True)
-    except ImportError:
+    except (ImportError, NotImplementedError):
         _use_unsloth = False
         print("  Backend: HuggingFace (install 'unsloth' for faster training)", flush=True)
 
@@ -186,7 +186,10 @@ def run_finetune(
         warnings.filterwarnings("ignore", message=".*pin_memory.*")
         
         if not _use_unsloth:
-            from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+            from transformers import (
+                AutoModelForCausalLM, AutoModelForSeq2SeqLM,
+                AutoTokenizer, BitsAndBytesConfig, AutoConfig,
+            )
             from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
     except ImportError as e:
         print(f"\nERROR: Missing required library: {e}", flush=True)
@@ -212,6 +215,16 @@ def run_finetune(
 
     # ── Load model + configure LoRA ────────────────────────────────────────
     print(f"\nLoading base model: {base_model}…", flush=True)
+
+    # Guard: pre-quantized BNB models require CUDA
+    _is_bnb_model = any(tag in base_model.lower() for tag in ["bnb-4bit", "bnb-8bit", "bnb_4bit", "bnb_8bit"])
+    if _is_bnb_model and not _use_unsloth and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"The model '{base_model}' is a pre-quantized bitsandbytes model "
+            f"that requires a CUDA GPU. On Apple Silicon / CPU, use a non-quantized "
+            f"model instead (e.g. 'mistralai/Ministral-8B-Instruct-2410' or "
+            f"'meta-llama/Llama-3.1-8B')."
+        )
 
     if _use_unsloth:
         model, tokenizer = FastLanguageModel.from_pretrained(
@@ -243,12 +256,39 @@ def run_finetune(
                 bnb_4bit_compute_dtype=torch.float16,
                 bnb_4bit_use_double_quant=True,
             )
-            model = AutoModelForCausalLM.from_pretrained(
-                base_model,
-                quantization_config=bnb_config,
-                device_map="auto",
-                trust_remote_code=True,
-            )
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    base_model,
+                    quantization_config=bnb_config,
+                    device_map="auto",
+                    trust_remote_code=True,
+                )
+            except ValueError:
+                # Multimodal / conditional-generation models (e.g. Mistral3)
+                # aren't registered under AutoModelForCausalLM.  Load the
+                # architecture-specific class directly so we get a model that
+                # supports .generate() and LoRA.
+                print("  AutoModelForCausalLM unsupported — loading architecture "
+                      "class directly", flush=True)
+                _cfg = AutoConfig.from_pretrained(base_model, trust_remote_code=True)
+                _arch = getattr(_cfg, "architectures", [None])[0]
+                if _arch:
+                    import transformers
+                    _cls = getattr(transformers, _arch, None)
+                    if _cls is None:
+                        raise ValueError(
+                            f"Architecture '{_arch}' not found in transformers "
+                            f"{transformers.__version__}. Try upgrading: "
+                            f"pip install -U transformers"
+                        )
+                    model = _cls.from_pretrained(
+                        base_model,
+                        quantization_config=bnb_config,
+                        device_map="auto",
+                        trust_remote_code=True,
+                    )
+                else:
+                    raise
             model = prepare_model_for_kbit_training(model)
         else:
             device_map = "auto" if torch.cuda.is_available() else None
@@ -265,16 +305,62 @@ def run_finetune(
                 dtype = torch.bfloat16
                 print("  MPS detected — using bfloat16 to reduce memory", flush=True)
 
-            model = AutoModelForCausalLM.from_pretrained(
-                base_model,
-                torch_dtype=dtype,
-                device_map=device_map,
-                trust_remote_code=True,
-            )
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    base_model,
+                    torch_dtype=dtype,
+                    device_map=device_map,
+                    trust_remote_code=True,
+                )
+            except ValueError:
+                # Multimodal / conditional-generation models (e.g. Mistral3)
+                # aren't registered under AutoModelForCausalLM.  Load the
+                # architecture-specific class directly so we get a model that
+                # supports .generate() and LoRA.
+                print("  AutoModelForCausalLM unsupported — loading architecture "
+                      "class directly", flush=True)
+                _cfg = AutoConfig.from_pretrained(base_model, trust_remote_code=True)
+                _arch = getattr(_cfg, "architectures", [None])[0]
+                if _arch:
+                    import transformers
+                    _cls = getattr(transformers, _arch, None)
+                    if _cls is None:
+                        raise ValueError(
+                            f"Architecture '{_arch}' not found in transformers "
+                            f"{transformers.__version__}. Try upgrading: "
+                            f"pip install -U transformers"
+                        )
+                    model = _cls.from_pretrained(
+                        base_model,
+                        torch_dtype=dtype,
+                        device_map=device_map,
+                        trust_remote_code=True,
+                    )
+                else:
+                    raise
 
         tokenizer = AutoTokenizer.from_pretrained(base_model, trust_remote_code=True)
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.eos_token
+
+        # Base models often lack a chat template — set a sensible default
+        # so apply_chat_template() works during dataset formatting.
+        if tokenizer.chat_template is None:
+            print("  No chat template found — applying Llama-3 style default", flush=True)
+            tokenizer.chat_template = (
+                "{% for message in messages %}"
+                "{{'<|start_header_id|>' + message['role'] + '<|end_header_id|>\n\n'}}"
+                "{% if message['content'] is string %}"
+                "{{ message['content'] }}"
+                "{% else %}"
+                "{% for block in message['content'] %}"
+                "{% if block['type'] == 'text' %}{{ block['text'] }}{% endif %}"
+                "{% endfor %}"
+                "{% endif %}"
+                "{{ '<|eot_id|>' }}"
+                "{% endfor %}"
+                "{% if add_generation_prompt %}{{'<|start_header_id|>assistant<|end_header_id|>\n\n'}}{% endif %}"
+            )
 
         print(f"  Model loaded: {model.config.model_type}", flush=True)
         print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
@@ -467,6 +553,8 @@ def main():
     parser.add_argument("--lora-dropout", type=float, default=0.0)
     parser.add_argument("--max-seq-length", type=int, default=512)
     parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--save-steps", type=int, default=100,
+                        help="Save a checkpoint every N training steps (default: 100)")
     parser.add_argument("--no-4bit", action="store_true",
                         help="Disable 4-bit quantization")
     parser.add_argument("--ollama-name", default=None,
@@ -495,6 +583,7 @@ def main():
         lora_dropout=args.lora_dropout,
         max_seq_length=args.max_seq_length,
         gradient_accumulation_steps=args.grad_accum,
+        save_steps=args.save_steps,
         use_4bit=not args.no_4bit,
         ollama_name=args.ollama_name,
         resume=args.resume,

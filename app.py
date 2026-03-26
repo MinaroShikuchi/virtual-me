@@ -136,6 +136,7 @@ def main():
             st.Page("pages/entity_browser.py", title="Graph Explorer",    url_path="browser",     icon=":material/travel_explore:"),
             st.Page("pages/personas.py",       title="Personas",          url_path="personas",    icon=":material/groups:"),
             st.Page("pages/models.py",         title="Models & Adapters", url_path="models",      icon=":material/model_training:"),
+            st.Page("pages/training_compare.py", title="Training Compare", url_path="training",   icon=":material/compare_arrows:"),
         ]
     )
 

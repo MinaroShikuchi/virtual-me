@@ -272,10 +272,6 @@ def _render_ingestor_section(collection, current_count: int):
 
         log_key_ft = "vec_log_finetune"
 
-        log_box_ft = st.empty()
-        if st.session_state.get(log_key_ft):
-            scrollable_log(log_box_ft, st.session_state[log_key_ft], follow=False, title="Fine-tune Export")
-
         run_col_ft, _ = st.columns([1, 3])
         with run_col_ft:
             do_export = st.button("Export Fine-tune Data", key="btn_finetune",
