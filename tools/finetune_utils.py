@@ -296,13 +296,11 @@ def prepare_dataset(
     """
     from datasets import Dataset
 
-    # Apply Unsloth chat template override if needed
-    if use_unsloth:
-        from unsloth import get_chat_template
-        tokenizer = get_chat_template(
-            tokenizer,
-            chat_template="llama-3",
-        )
+    # NOTE: We intentionally do NOT override the chat template here.
+    # The model's native tokenizer already has the correct template
+    # (e.g. Mistral uses [INST]/[/INST], Llama-3 uses <|start_header_id|>).
+    # Overriding with get_chat_template("llama-3") would cause a mismatch
+    # for non-Llama models.
 
     print("Formatting dataset with model's native chat template…", flush=True)
 
