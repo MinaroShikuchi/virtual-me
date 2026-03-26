@@ -156,6 +156,42 @@ def run_finetune(
         args=training_args,
     )
 
+    # ── Completion-only: mask user/system tokens ──────────────────────────
+    # Only compute loss on assistant responses so the model doesn't learn
+    # to predict user messages ("autocomplete mode").
+    if _use_unsloth:
+        from unsloth import train_on_responses_only
+        # Detect the instruction/response markers from the first example
+        sample = dataset[0]["text"]
+        # Llama-3 style (Unsloth default)
+        if "<|start_header_id|>assistant<|end_header_id|>" in sample:
+            trainer = train_on_responses_only(
+                trainer,
+                instruction_part="<|start_header_id|>user<|end_header_id|>\n\n",
+                response_part="<|start_header_id|>assistant<|end_header_id|>\n\n",
+            )
+        # Mistral style
+        elif "[/INST]" in sample:
+            trainer = train_on_responses_only(
+                trainer,
+                instruction_part="[INST]",
+                response_part="[/INST]",
+            )
+        # ChatML style
+        elif "<|im_start|>assistant" in sample:
+            trainer = train_on_responses_only(
+                trainer,
+                instruction_part="<|im_start|>user\n",
+                response_part="<|im_start|>assistant\n",
+            )
+        else:
+            print("  ⚠️  Could not detect response markers — training on ALL tokens",
+                  flush=True)
+        print("  Completion-only: ENABLED (train_on_responses_only)", flush=True)
+    else:
+        print("  ⚠️  Completion-only training requires Unsloth — training on ALL tokens",
+              flush=True)
+
     trainer.train(resume_from_checkpoint=resume)
 
     # ── Save & export ─────────────────────────────────────────────────────

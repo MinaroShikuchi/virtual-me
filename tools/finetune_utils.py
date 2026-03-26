@@ -288,7 +288,9 @@ def prepare_dataset(
     Returns
     -------
     dataset : datasets.Dataset
-        With a ``messages`` column (list of dicts per row).
+        With a ``text`` column (pre-formatted chat template strings).
+    tokenizer
+        The tokenizer (may have been modified by Unsloth get_chat_template).
     stats : dict
         Counts for merged, filtered, template_errors.
     """
@@ -354,9 +356,10 @@ def prepare_dataset(
             num_filtered += 1
             continue
 
-        examples.append({"messages": sanitized})
+        examples.append({"text": text})
 
     dataset = Dataset.from_list(examples)
+    # Return the tokenizer (may have been modified by Unsloth get_chat_template)
 
     # Print stats
     print(f"  Processed {raw_total:,} examples:", flush=True)
@@ -396,7 +399,7 @@ def build_training_args(
     num_examples: int,
     torch_module,
 ):
-    """Build an SFTConfig with completion-only loss enabled.
+    """Build an SFTConfig for text-based SFT training.
 
     Returns
     -------
@@ -446,14 +449,10 @@ def build_training_args(
         dataloader_pin_memory=False,
         # SFT-specific
         max_length=max_seq_length,
+        dataset_text_field="text",
         packing=False,
         dataset_num_proc=1,
-        completion_only_loss=True,
     )
-
-    print(f"\n  Completion-only loss: ENABLED", flush=True)
-    print(f"    → Loss computed ONLY on assistant tokens (user/system masked)",
-          flush=True)
 
     return training_args, output_path
 
