@@ -134,16 +134,26 @@ def _run_diagnostics(
         )
 
     # 3. Check for EOS / end-of-turn tokens
-    if eos_token and formatted_texts:
-        missing_eos = sum(1 for t in formatted_texts if eos_token not in t)
-        if missing_eos == len(formatted_texts):
+    # Some templates use a different end-of-turn token than the tokenizer's EOS
+    # (e.g. Llama-3 uses <|eot_id|> while the tokenizer EOS is </s>).
+    eot_candidates = [eos_token] if eos_token else []
+    for tok in ["<|eot_id|>", "<|im_end|>", "</s>", "[/INST]"]:
+        if tok not in eot_candidates:
+            eot_candidates.append(tok)
+
+    if formatted_texts:
+        has_any_eot = False
+        detected_eot = None
+        for tok in eot_candidates:
+            if tok and any(tok in t for t in formatted_texts[:10]):
+                has_any_eot = True
+                detected_eot = tok
+                break
+
+        if not has_any_eot:
             warnings.append(
-                f"⚠️  EOS token '{eos_token}' not found in ANY formatted example. "
-                f"The model may not learn when to stop generating."
-            )
-        elif missing_eos > 0:
-            warnings.append(
-                f"⚠️  EOS token '{eos_token}' missing from {missing_eos}/{len(formatted_texts)} examples."
+                "⚠️  No end-of-turn token found in formatted examples. "
+                "The model may not learn when to stop generating."
             )
 
     # 4. Check for examples with no special tokens at all

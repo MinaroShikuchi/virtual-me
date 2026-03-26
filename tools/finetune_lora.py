@@ -17,8 +17,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from pathlib import Path
+
+# Workaround for PyTorch flex_attention bug (torch >= 2.5):
+# "expected scalar type Float but found Half" in sdpa_dense_backward.
+# Must be set BEFORE torch is imported.
+os.environ.setdefault("TORCH_CUDNN_SDPA_ENABLED", "0")
 
 try:
     from tools.finetune_utils import (

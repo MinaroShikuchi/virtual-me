@@ -192,6 +192,19 @@ def load_model_and_tokenizer(
             load_in_4bit=use_4bit,
             dtype=_unsloth_dtype,
         )
+
+        # Workaround for PyTorch flex_attention bug: "expected scalar type
+        # Float but found Half" in sdpa_dense_backward.  Force eager
+        # attention implementation which doesn't use flex_attention.
+        if hasattr(model.config, "_attn_implementation"):
+            model.config._attn_implementation = "eager"
+        if hasattr(model.config, "attn_implementation"):
+            model.config.attn_implementation = "eager"
+        # Also disable flash/mem-efficient SDP as a safety net
+        if hasattr(torch.backends.cuda, "enable_flash_sdp"):
+            torch.backends.cuda.enable_flash_sdp(False)
+        if hasattr(torch.backends.cuda, "enable_mem_efficient_sdp"):
+            torch.backends.cuda.enable_mem_efficient_sdp(False)
         print(f"  Model loaded: {model.config.model_type}", flush=True)
         print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
 
