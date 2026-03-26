@@ -180,11 +180,17 @@ def load_model_and_tokenizer(
     if use_unsloth:
         from unsloth import FastLanguageModel
 
+        # Use bfloat16 when available to avoid Float/Half mismatch in
+        # sdpa_dense_backward (torch flex_attention bug with float16).
+        _unsloth_dtype = None
+        if torch.cuda.is_available() and torch.cuda.is_bf16_supported():
+            _unsloth_dtype = torch.bfloat16
+
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=base_model,
             max_seq_length=max_seq_length,
             load_in_4bit=use_4bit,
-            dtype=None,
+            dtype=_unsloth_dtype,
         )
         print(f"  Model loaded: {model.config.model_type}", flush=True)
         print(f"  Parameters: {sum(p.numel() for p in model.parameters()):,}", flush=True)
