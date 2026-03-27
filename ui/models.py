@@ -1,5 +1,11 @@
 """
 ui/models.py — Manage LoRA adapters, Fine-Tuning, and Ollama compilation
+
+Directory layout:
+    models/
+    ├── adapters/   # LoRA adapters (local training output + downloaded from HF)
+    ├── base/       # Base models (downloaded once, reused across exports)
+    └── gguf/       # Merged GGUF output (for Ollama import)
 """
 import sys
 import os
@@ -32,20 +38,73 @@ try:
 except ImportError:
     AutoTokenizer = None
 
+# ── Directory constants ───────────────────────────────────────────────────────
+
+ADAPTERS_DIR = Path("models/adapters")
+BASE_DIR = Path("models/base")
+GGUF_DIR = Path("models/gguf")
+
+# Legacy paths for backward compatibility
+_LEGACY_MODELS_DIR = Path("models")
+_LEGACY_HF_CACHE = Path("models/_hf_cache")
+
+
+def _is_adapter_dir(d: Path) -> bool:
+    """Check if a directory is a valid adapter (has adapter_config.json at root or in checkpoints)."""
+    if not d.is_dir():
+        return False
+    # Check root level
+    if (d / "adapter_config.json").exists():
+        return True
+    # Check inside checkpoint-* subdirectories
+    for sub in d.iterdir():
+        if sub.is_dir() and sub.name.startswith("checkpoint-"):
+            if (sub / "adapter_config.json").exists():
+                return True
+    return False
 
 
 def get_available_adapters():
-    """Find all folders in ./models that contain an adapter_config.json"""
-    models_dir = Path("models")
-    if not models_dir.exists() or not models_dir.is_dir():
-        return []
-        
+    """Find all folders in models/adapters/ that contain an adapter_config.json.
+
+    Checks both the root level and checkpoint-* subdirectories.
+    Also checks the legacy flat models/ directory for backward compatibility.
+    """
     adapters = []
-    for d in models_dir.iterdir():
-        if d.is_dir() and (d / "adapter_config.json").exists():
-            adapters.append(d.name)
-            
+
+    # Primary location: models/adapters/
+    if ADAPTERS_DIR.exists() and ADAPTERS_DIR.is_dir():
+        for d in ADAPTERS_DIR.iterdir():
+            if _is_adapter_dir(d):
+                adapters.append(d.name)
+
+    # Backward compatibility: check legacy models/ (flat layout)
+    if _LEGACY_MODELS_DIR.exists() and _LEGACY_MODELS_DIR.is_dir():
+        for d in _LEGACY_MODELS_DIR.iterdir():
+            if (d.name not in ("adapters", "base", "gguf", "_hf_cache")
+                    and _is_adapter_dir(d)
+                    and d.name not in adapters):
+                adapters.append(d.name)
+
     return sorted(adapters)
+
+
+def _resolve_adapter_path(adapter_name: str) -> Path:
+    """Resolve an adapter name to its full path.
+
+    Checks models/adapters/ first, then falls back to legacy models/ layout.
+    """
+    new_path = ADAPTERS_DIR / adapter_name
+    if new_path.exists():
+        return new_path
+
+    # Legacy fallback
+    legacy_path = _LEGACY_MODELS_DIR / adapter_name
+    if legacy_path.exists():
+        return legacy_path
+
+    return new_path  # default to new path even if it doesn't exist
+
 
 def render_finetune_tab():
     st.markdown("### :material/neurology: Fine-Tune LoRA Adapter")
@@ -123,7 +182,7 @@ def render_finetune_tab():
             
         lora_output = st.text_input(
             "Output directory",
-            value=f"./models/{default_export_name}",
+            value=f"./models/adapters/{default_export_name}",
             help="Folder to save your raw HuggingFace format LoRA adapter."
         )
     with col_lora2:
@@ -476,79 +535,210 @@ def render_finetune_tab():
             st.error(f"Training failed (exit {lora_proc.returncode})")
 
 
+def _get_available_gguf():
+    """Find available GGUF/safetensors models in models/gguf/ with a Modelfile."""
+    if not GGUF_DIR.exists():
+        return []
+    models = []
+    for d in sorted(GGUF_DIR.iterdir()):
+        if d.is_dir() and (d / "Modelfile").exists():
+            # Get size
+            size_mb = sum(
+                f.stat().st_size for f in d.glob("**/*") if f.is_file()
+            ) / (1024 * 1024)
+            models.append({"name": d.name, "path": d, "size_mb": size_mb})
+    return models
+
+
 def render_export_tab():
     st.markdown("### :material/inventory_2: Export & Compile Adapters")
-    st.write("Manage your generated LoRA adapters and effortlessly compile them into native Ollama models.")
-    
-    adapters = get_available_adapters()
-    
-    if not adapters:
-        st.info("No trained models found yet. Go to the Train tab to generate your first adapter!")
-        return
+    st.write("Download adapters, merge with base models, and register in Ollama.")
 
-    c1, c2 = st.columns([1, 1.5])
-    
-    with c1:
-        st.markdown("#### 1. Select Adapter")
-        selected_adapter = st.selectbox("Trained LoRA Adapter", adapters, help="These are the fine-tuned adapters located in the ./models folder.")
-        
-        st.markdown("#### 2. Target Ollama Name")
-        ollama_name = st.text_input("Model Name", value=f"my-{selected_adapter}", help="The name this model will have inside Ollama.")
-        
-        quant_method = st.selectbox("Quantization", ["q4_k_m", "q8_0", "f16"], index=0, help="4-bit (q4_k_m) is standard for local GPUs.")
-        
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("🚀 Compile to Ollama", type="primary", width="stretch"):
-            try:
-                from tools.export_to_ollama import export_model
-            except ImportError:
-                st.error("Could not load export script (tools/export_to_ollama.py).")
-                st.stop()
-            
-            adapter_path = f"./models/{selected_adapter}"
-            out_path = f"./models/{selected_adapter}-gguf"
-                
-            with st.status(f"Compiling '{selected_adapter}' to '{ollama_name}'...", expanded=True) as status:
-                st.write("⏳ Merging weights and converting to GGUF format (this will take a few minutes)...")
+    adapters = get_available_adapters()
+
+    # ── Section 1: Model Source ────────────────────────────────────────────
+    st.markdown("#### 1. Model Source")
+
+    source_options = ["Local Adapter", "HuggingFace Model"]
+    default_idx = 0 if adapters else 1
+
+    source_mode = st.radio(
+        "Source",
+        source_options,
+        index=default_idx,
+        horizontal=True,
+        help="Local adapters (from models/adapters/) or download from HuggingFace.",
+    )
+
+    hf_model_id = None
+    selected_adapter = None
+    checkpoint = None
+
+    if source_mode == "HuggingFace Model":
+        hf_model_id = st.text_input(
+            "HuggingFace Model ID",
+            placeholder="e.g. Minar0/my-ministral-3-8B-Instruct-2512-bnb-4bit-v1.0",
+            help="The adapter will be downloaded to models/adapters/.",
+        )
+        checkpoint = st.text_input(
+            "Checkpoint (optional)",
+            placeholder="e.g. checkpoint-400",
+            help="Download a specific checkpoint subfolder from the repo.",
+        ) or None
+
+        # Show adapter info if entered
+        if hf_model_id:
+            st.caption(f"Will download to: `models/adapters/{hf_model_id.replace('/', '_')}/`")
+
+    elif not adapters:
+        st.info("No trained adapters found in `models/adapters/`. "
+                "Train a model first or download from HuggingFace.")
+    else:
+        selected_adapter = st.selectbox(
+            "Trained LoRA Adapter", adapters,
+            help="Fine-tuned adapters in models/adapters/.",
+        )
+
+        # List available checkpoints
+        adapter_dir = _resolve_adapter_path(selected_adapter)
+        checkpoints = sorted(
+            [d.name for d in adapter_dir.iterdir()
+             if d.is_dir() and d.name.startswith("checkpoint-")],
+            key=lambda x: int(x.split("-")[-1]) if x.split("-")[-1].isdigit() else 0,
+        ) if adapter_dir.exists() else []
+
+        if checkpoints:
+            checkpoint_options = ["Latest (final weights)"] + checkpoints
+            selected_cp = st.selectbox(
+                "Checkpoint", checkpoint_options,
+                help="Select a specific training checkpoint.",
+            )
+            if selected_cp != "Latest (final weights)":
+                checkpoint = selected_cp
+
+        # Show adapter info card
+        if adapter_dir.exists():
+            size_mb = sum(
+                f.stat().st_size for f in adapter_dir.glob("**/*") if f.is_file()
+            ) / (1024 * 1024)
+            # Try to read base model from adapter_config
+            base_model_name = "unknown"
+            for cfg_path in [adapter_dir / "adapter_config.json"] + list(
+                adapter_dir.glob("checkpoint-*/adapter_config.json")
+            ):
+                if cfg_path.exists():
+                    import json as _json
+                    cfg = _json.loads(cfg_path.read_text())
+                    base_model_name = cfg.get("base_model_name_or_path", "unknown")
+                    break
+            st.caption(
+                f"📦 **{selected_adapter}** — {size_mb:.0f} MB — "
+                f"Base: `{base_model_name}` — "
+                f"{len(checkpoints)} checkpoint(s)"
+            )
+
+    # Download button
+    can_download = bool(hf_model_id) if source_mode == "HuggingFace Model" else bool(selected_adapter)
+    if source_mode == "HuggingFace Model" and hf_model_id:
+        if st.button("⬇️ Download Adapter + Base Model", type="secondary",
+                     width="stretch"):
+            with st.status("Downloading…", expanded=True) as status:
                 try:
-                    # Streamlit blocks while generating
+                    from tools.export_to_ollama import export_model
+                    adapter_path = str(ADAPTERS_DIR / hf_model_id.replace("/", "_"))
+                    out_path = str(GGUF_DIR / hf_model_id.split("/")[-1])
                     export_model(
                         adapter_path=adapter_path,
                         out_path=out_path,
-                        quant_method=quant_method,
-                        ollama_name=ollama_name
+                        quant_method="q4_k_m",
+                        ollama_name=None,  # Don't register yet
+                        base_model=hf_model_id,
+                        checkpoint=checkpoint,
                     )
-                    status.update(label="✅ Compilation Complete!", state="complete", expanded=False)
-                    st.success(f"Successfully added `{ollama_name}` to Ollama! You can now select it in the LLM Settings.")
+                    status.update(label="✅ Download & merge complete!", state="complete")
+                    st.rerun()
+                except Exception as e:
+                    status.update(label="❌ Download failed", state="error")
+                    st.error(f"Error: {e}")
+    elif source_mode == "Local Adapter" and selected_adapter:
+        if st.button("🔄 Merge Adapter + Base Model → GGUF", type="secondary",
+                     width="stretch"):
+            with st.status("Merging…", expanded=True) as status:
+                try:
+                    from tools.export_to_ollama import export_model
+                    adapter_dir = _resolve_adapter_path(selected_adapter)
+                    out_path = str(GGUF_DIR / selected_adapter)
+                    export_model(
+                        adapter_path=str(adapter_dir),
+                        out_path=out_path,
+                        quant_method="q4_k_m",
+                        ollama_name=None,  # Don't register yet
+                        checkpoint=checkpoint,
+                    )
+                    status.update(label="✅ Merge complete!", state="complete")
+                    st.rerun()
+                except Exception as e:
+                    status.update(label="❌ Merge failed", state="error")
+                    st.error(f"Error: {e}")
+
+    st.divider()
+
+    # ── Section 2: Export to Ollama ────────────────────────────────────────
+    st.markdown("#### 2. Export to Ollama")
+
+    available_gguf = _get_available_gguf()
+
+    if not available_gguf:
+        st.info("No merged models found in `models/gguf/`. "
+                "Use Section 1 to download and merge an adapter first.")
+    else:
+        gguf_names = [m["name"] for m in available_gguf]
+        selected_gguf = st.selectbox(
+            "Merged Model", gguf_names,
+            help="Select a merged model from models/gguf/.",
+        )
+
+        # Show info
+        gguf_info = next(m for m in available_gguf if m["name"] == selected_gguf)
+        st.caption(f"📦 {gguf_info['size_mb']:.0f} MB — `models/gguf/{selected_gguf}/`")
+
+        col_name, col_quant = st.columns(2)
+        with col_name:
+            ollama_name = st.text_input(
+                "Ollama Model Name",
+                value=f"my-{selected_gguf}",
+                help="The name this model will have in Ollama.",
+            )
+        with col_quant:
+            quant_method = st.selectbox(
+                "Quantization", ["q4_K_M", "q8_0", "f16"], index=0,
+                help="4-bit (q4_K_M) is standard. f16 = no quantization.",
+            )
+
+        if st.button("🚀 Register in Ollama", type="primary", width="stretch",
+                     disabled=not ollama_name):
+            import subprocess
+            gguf_path = str(gguf_info["path"])
+            cmd = ["ollama", "create", ollama_name, "-f", "Modelfile"]
+            if quant_method != "f16":
+                cmd.extend(["--quantize", quant_method])
+
+            with st.status(f"Creating '{ollama_name}' in Ollama…", expanded=True) as status:
+                st.write(f"Running: `{' '.join(cmd)}`")
+                st.write(f"Working directory: `{gguf_path}`")
+                if quant_method != "f16":
+                    st.write(f"⏳ Quantizing to {quant_method} — this may take 10-15 minutes…")
+                try:
+                    subprocess.run(cmd, cwd=gguf_path, check=True)
+                    status.update(label="✅ Model registered!", state="complete",
+                                  expanded=False)
+                    st.success(f"Successfully added `{ollama_name}` to Ollama! "
+                               f"Select it in LLM Settings.")
                     st.balloons()
                 except Exception as e:
-                    status.update(label="❌ Compilation Failed", state="error", expanded=True)
-                    st.error(f"Error during export: {e}")
-
-    with c2:
-        st.markdown("#### Available Adapters")
-        for adapter in adapters:
-            adapter_path = Path(f"models/{adapter}")
-            # Get size in MB
-            size_mb = sum(f.stat().st_size for f in adapter_path.glob('**/*') if f.is_file()) / (1024*1024)
-            
-            st.markdown(
-                f"""
-                <div style="
-                    background: #1e2030;
-                    border: 1px solid #2d3250;
-                    border-left: 4px solid #8b5cf6;
-                    border-radius: 8px;
-                    padding: 12px 16px;
-                    margin-bottom: 8px;
-                ">
-                    <div style="font-weight:600; font-size:1.05rem; color:#f1f5f9;">📦 {adapter}</div>
-                    <div style="font-size:0.8rem; color:#94a3b8; margin-top:4px;">Adapter Size: <b>{size_mb:.1f} MB</b></div>
-                    <div style="font-size:0.75rem; color:#64748b; margin-top:2px;">Path: <code>./models/{adapter}</code></div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
+                    status.update(label="❌ Failed", state="error", expanded=True)
+                    st.error(f"Error: {e}")
+                    st.code(f"cd {gguf_path} && {' '.join(cmd)}", language="bash")
 
 def render_models_tab():
     st.markdown("### :material/model_training: Models & Adapters")

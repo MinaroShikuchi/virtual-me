@@ -61,7 +61,7 @@ _CLI_FLAGS: dict[str, tuple[str, type]] = {
 # Defaults matching tools/finetune_lora.py
 _PARAM_DEFAULTS: dict[str, Any] = {
     "data":           "./data/facebook/finetune_data.jsonl",
-    "output":         "./models/my-lora",
+    "output":         "./models/adapters/my-lora",
     "epochs":         3,
     "batch_size":     2,
     "lr":             2e-4,
@@ -404,7 +404,7 @@ def _render_runs_table(runs: list[dict]) -> set[str]:
     for i, run in enumerate(runs):
         col_sel, col_name, col_info, col_del = st.columns([0.5, 3, 5, 1])
         with col_sel:
-            if st.checkbox("", value=True, key=f"tc_sel_{run['id']}", label_visibility="collapsed"):
+            if st.checkbox("Select", value=True, key=f"tc_sel_{run['id']}", label_visibility="collapsed"):
                 selected_ids.add(run["id"])
         with col_name:
             st.markdown(f"**{run.get('name', run['id'])}**")

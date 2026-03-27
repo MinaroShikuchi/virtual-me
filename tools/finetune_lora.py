@@ -10,7 +10,7 @@ Usage:
     python tools/finetune_lora.py \
         --base-model meta-llama/Llama-3-8B \
         --data ./data/facebook/finetune_data.jsonl \
-        --output ./models/my-lora \
+        --output ./models/adapters/my-lora \
         --epochs 3 --batch-size 2 --lr 2e-4 --lora-rank 8
 """
 
@@ -222,7 +222,7 @@ def main():
                         help="HuggingFace model ID (e.g. meta-llama/Llama-3-8B)")
     parser.add_argument("--data", default="./data/facebook/finetune_data.jsonl",
                         help="Path to JSONL training data")
-    parser.add_argument("--output", default="./models/my-lora",
+    parser.add_argument("--output", default="./models/adapters/my-lora",
                         help="Output directory for LoRA adapter")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--batch-size", type=int, default=2)

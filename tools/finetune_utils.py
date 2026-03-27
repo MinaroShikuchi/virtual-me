@@ -454,7 +454,7 @@ def build_training_args(
         warmup_steps=warmup_steps,
         logging_steps=logging_steps,
         save_steps=save_steps,
-        save_total_limit=2,
+        save_total_limit=5,
         fp16=use_fp16,
         bf16=use_bf16,
         gradient_checkpointing=True,
@@ -500,9 +500,11 @@ def save_and_export(
             print(f"🚀 Automated pipeline: Exporting and registering as "
                   f"'{ollama_name}' in Ollama...", flush=True)
             print("=" * 60 + "\n", flush=True)
+            # Place GGUF output in models/gguf/<adapter_name>/
+            gguf_out = Path("models/gguf") / output_path.name
             export_model(
                 adapter_path=str(output_path),
-                out_path=f"{output_path}-gguf",
+                out_path=str(gguf_out),
                 quant_method="q4_k_m",
                 ollama_name=ollama_name,
             )
