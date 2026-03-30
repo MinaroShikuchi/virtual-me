@@ -557,7 +557,7 @@ def build_training_args(
         fp16=use_fp16,
         bf16=use_bf16,
         gradient_checkpointing=True,
-        optim="adamw_torch",
+        optim="paged_adamw_32bit",
         lr_scheduler_type="cosine",
         report_to="none",
         remove_unused_columns=False,

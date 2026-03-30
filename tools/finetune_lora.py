@@ -62,7 +62,7 @@ def run_finetune(
     lora_dropout: float = 0.0,
     max_seq_length: int = 512,
     gradient_accumulation_steps: int = 4,
-    warmup_ratio: float = 0.03,
+    warmup_ratio: float = 0.1,
     save_steps: int = 100,
     logging_steps: int = 10,
     use_4bit: bool = True,
@@ -230,7 +230,9 @@ def main():
     parser.add_argument("--lora-alpha", type=int, default=16)
     parser.add_argument("--lora-dropout", type=float, default=0.0)
     parser.add_argument("--max-seq-length", type=int, default=512)
-    parser.add_argument("--grad-accum", type=int, default=4)
+    parser.add_argument("--grad-accum", type=int, default=16)
+    parser.add_argument("--warmup-ratio", type=float, default=0.1,
+                        help="Fraction of total steps used for LR warmup (default: 0.1)")
     parser.add_argument("--save-steps", type=int, default=100,
                         help="Save a checkpoint every N training steps (default: 100)")
     parser.add_argument("--no-4bit", action="store_true",
@@ -264,6 +266,7 @@ def main():
         lora_dropout=args.lora_dropout,
         max_seq_length=args.max_seq_length,
         gradient_accumulation_steps=args.grad_accum,
+        warmup_ratio=args.warmup_ratio,
         save_steps=args.save_steps,
         use_4bit=not args.no_4bit,
         resume=args.resume,

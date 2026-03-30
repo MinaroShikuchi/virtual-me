@@ -68,7 +68,7 @@ _PARAM_DEFAULTS: dict[str, Any] = {
     "lora_alpha":     16,
     "lora_dropout":   0.0,
     "max_seq_length": 512,
-    "grad_accum":     4,
+    "grad_accum":     16,
     "use_4bit":       True,
 }
 
@@ -424,10 +424,53 @@ def _render_runs_table(runs: list[dict]) -> set[str]:
                 info_parts.append(f"peak_acc={analysis['peak_accuracy']:.2%}")
             st.caption(" · ".join(info_parts))
         with col_del:
-            if st.button("🗑️", key=f"tc_del_{run['id']}", help=f"Delete run: {run.get('name', run['id'])}"):
-                runs_updated = [r for r in runs if r["id"] != run["id"]]
-                _save_runs(runs_updated)
-                st.rerun()
+            col_edit, col_trash = st.columns(2)
+            with col_edit:
+                if st.button("", icon=":material/edit:", key=f"tc_edit_{run['id']}", help=f"Edit logs: {run.get('name', run['id'])}"):
+                    st.session_state[f"tc_editing_{run['id']}"] = True
+            with col_trash:
+                if st.button("", icon=":material/delete:", key=f"tc_del_{run['id']}", help=f"Delete run: {run.get('name', run['id'])}"):
+                    runs_updated = [r for r in runs if r["id"] != run["id"]]
+                    _save_runs(runs_updated)
+                    st.rerun()
+
+        # Inline edit form (shown when edit button was clicked)
+        if st.session_state.get(f"tc_editing_{run['id']}", False):
+            with st.container(border=True):
+                st.markdown(f"**Edit logs for: {run.get('name', run['id'])}**")
+                # Reconstruct raw log text from stored entries so the textarea is pre-filled
+                existing_entries = run.get("log_entries", [])
+                prefilled = "\n".join(json.dumps(e) for e in existing_entries)
+                edited_log_text = st.text_area(
+                    "Training logs",
+                    value=prefilled,
+                    height=300,
+                    key=f"tc_edit_logs_{run['id']}",
+                )
+                logging_steps_edit = st.number_input(
+                    "Logging steps",
+                    min_value=1, max_value=1000,
+                    value=10, step=1,
+                    key=f"tc_edit_lsteps_{run['id']}",
+                )
+                edit_col1, edit_col2 = st.columns([1, 4])
+                with edit_col1:
+                    if st.button("💾 Save", icon=":material/save:", key=f"tc_edit_save_{run['id']}", type="primary"):
+                        new_entries = parse_training_logs(edited_log_text, logging_steps=logging_steps_edit)
+                        updated_runs = []
+                        for r in runs:
+                            if r["id"] == run["id"]:
+                                r = dict(r)
+                                r["log_entries"] = new_entries
+                            updated_runs.append(r)
+                        _save_runs(updated_runs)
+                        del st.session_state[f"tc_editing_{run['id']}"]
+                        st.success(f"Saved {len(new_entries)} log entries.")
+                        st.rerun()
+                with edit_col2:
+                    if st.button("Cancel", icon=":material/cancel:", key=f"tc_edit_cancel_{run['id']}"):
+                        del st.session_state[f"tc_editing_{run['id']}"]
+                        st.rerun()
 
     # Full parameter comparison table
     if len(runs) > 1:
