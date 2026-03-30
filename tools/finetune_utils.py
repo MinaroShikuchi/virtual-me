@@ -375,8 +375,7 @@ def prepare_dataset(
 
         examples.append({"text": text})
 
-    dataset = Dataset.from_list(examples)
-    # Return the tokenizer (may have been modified by Unsloth get_chat_template)
+    dataset = Dataset.from_list(examples).shuffle(seed=42)
 
     # Print stats
     print(f"  Processed {raw_total:,} examples:", flush=True)

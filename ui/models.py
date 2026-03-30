@@ -42,21 +42,20 @@ except ImportError:
 
 ADAPTERS_DIR = Path("models/adapters")
 BASE_DIR = Path("models/base")
-GGUF_DIR = Path("models/gguf")
+MERGED_DIR = Path("models/merged")
 
-# Legacy paths for backward compatibility
+# Legacy flat paths (old layout without namespace subfolders)
 _LEGACY_MODELS_DIR = Path("models")
 _LEGACY_HF_CACHE = Path("models/_hf_cache")
+_LEGACY_GGUF_DIR = Path("models/gguf")
 
 
 def _is_adapter_dir(d: Path) -> bool:
-    """Check if a directory is a valid adapter (has adapter_config.json at root or in checkpoints)."""
+    """True if d contains adapter_config.json at root or inside a checkpoint-* subfolder."""
     if not d.is_dir():
         return False
-    # Check root level
     if (d / "adapter_config.json").exists():
         return True
-    # Check inside checkpoint-* subdirectories
     for sub in d.iterdir():
         if sub.is_dir() and sub.name.startswith("checkpoint-"):
             if (sub / "adapter_config.json").exists():
@@ -64,46 +63,47 @@ def _is_adapter_dir(d: Path) -> bool:
     return False
 
 
-def get_available_adapters():
-    """Find all folders in models/adapters/ that contain an adapter_config.json.
+def get_available_adapters() -> list[str]:
+    """Return adapter names relative to models/adapters/.
 
-    Checks both the root level and checkpoint-* subdirectories.
-    Also checks the legacy flat models/ directory for backward compatibility.
+    Supports both flat layout (models/adapters/my-model) and
+    namespace layout (models/adapters/Namespace/my-model → 'Namespace/my-model').
     """
-    adapters = []
+    adapters: list[str] = []
 
-    # Primary location: models/adapters/
-    if ADAPTERS_DIR.exists() and ADAPTERS_DIR.is_dir():
+    if ADAPTERS_DIR.exists():
         for d in ADAPTERS_DIR.iterdir():
             if _is_adapter_dir(d):
                 adapters.append(d.name)
-
-    # Backward compatibility: check legacy models/ (flat layout)
-    if _LEGACY_MODELS_DIR.exists() and _LEGACY_MODELS_DIR.is_dir():
-        for d in _LEGACY_MODELS_DIR.iterdir():
-            if (d.name not in ("adapters", "base", "gguf", "_hf_cache")
-                    and _is_adapter_dir(d)
-                    and d.name not in adapters):
-                adapters.append(d.name)
+            elif d.is_dir():
+                # Namespace subfolder: models/adapters/Namespace/ModelName
+                for sub in d.iterdir():
+                    if _is_adapter_dir(sub):
+                        adapters.append(f"{d.name}/{sub.name}")
 
     return sorted(adapters)
 
 
 def _resolve_adapter_path(adapter_name: str) -> Path:
-    """Resolve an adapter name to its full path.
+    """Resolve adapter name (may include namespace, e.g. 'Minar0/my-model') to full path."""
+    return ADAPTERS_DIR / adapter_name
 
-    Checks models/adapters/ first, then falls back to legacy models/ layout.
+
+def _find_base_model(hf_id: str) -> Path | None:
+    """Find a base model in models/base/ using the namespace/name tree.
+
+    Always prefers the non-BNB (fp16/bfloat16) variant, since BNB weights
+    are uint8 and cannot be merged or imported by llama.cpp.
+
+    Returns the Path if found with safetensors, else None.
     """
-    new_path = ADAPTERS_DIR / adapter_name
-    if new_path.exists():
-        return new_path
-
-    # Legacy fallback
-    legacy_path = _LEGACY_MODELS_DIR / adapter_name
-    if legacy_path.exists():
-        return legacy_path
-
-    return new_path  # default to new path even if it doesn't exist
+    import re as _re
+    clean_id = _re.sub(r"-bnb-\d+bit$", "", hf_id, flags=_re.IGNORECASE)
+    for candidate_id in ([clean_id, hf_id] if clean_id != hf_id else [hf_id]):
+        p = BASE_DIR / candidate_id   # e.g. models/base/unsloth/Ministral-3-8B-Instruct-2512
+        if p.exists() and any(p.glob("*.safetensors")):
+            return p
+    return None
 
 
 def render_finetune_tab():
@@ -535,210 +535,280 @@ def render_finetune_tab():
             st.error(f"Training failed (exit {lora_proc.returncode})")
 
 
-def _get_available_gguf():
-    """Find available GGUF/safetensors models in models/gguf/ with a Modelfile."""
-    if not GGUF_DIR.exists():
+def _get_merged_models() -> list[dict]:
+    """Find merged models in models/merged/ that have a Modelfile.
+
+    Supports both flat (merged/my-model) and namespace (merged/Minar0/my-model) layouts.
+    Returns name as 'Minar0/my-model' for namespace entries.
+    """
+    if not MERGED_DIR.exists():
         return []
     models = []
-    for d in sorted(GGUF_DIR.iterdir()):
-        if d.is_dir() and (d / "Modelfile").exists():
-            # Get size
-            size_mb = sum(
-                f.stat().st_size for f in d.glob("**/*") if f.is_file()
-            ) / (1024 * 1024)
+    for d in sorted(MERGED_DIR.iterdir()):
+        if not d.is_dir():
+            continue
+        if (d / "Modelfile").exists():
+            size_mb = sum(f.stat().st_size for f in d.glob("**/*") if f.is_file()) / 1e6
             models.append({"name": d.name, "path": d, "size_mb": size_mb})
+        else:
+            # Namespace subfolder: merged/Minar0/my-model
+            for sub in sorted(d.iterdir()):
+                if sub.is_dir() and (sub / "Modelfile").exists():
+                    size_mb = sum(f.stat().st_size for f in sub.glob("**/*") if f.is_file()) / 1e6
+                    models.append({"name": f"{d.name}/{sub.name}", "path": sub, "size_mb": size_mb})
     return models
+
+
+def _read_adapter_base_model(adapter_path: Path) -> str | None:
+    """Read base_model_name_or_path from adapter_config.json (root or first checkpoint)."""
+    for cfg_p in [adapter_path / "adapter_config.json"] + sorted(
+        adapter_path.glob("checkpoint-*/adapter_config.json")
+    ):
+        if cfg_p.exists():
+            return json.loads(cfg_p.read_text()).get("base_model_name_or_path")
+    return None
 
 
 def render_export_tab():
     st.markdown("### :material/inventory_2: Export & Compile Adapters")
-    st.write("Download adapters, merge with base models, and register in Ollama.")
 
-    adapters = get_available_adapters()
+    # ── Step 1: Download adapter from HuggingFace (optional) ──────────────
+    st.markdown("#### Step 1 — Download adapter from HuggingFace (optional)")
+    st.caption("Skip if you already have the adapter locally in `models/adapters/`.")
 
-    # ── Section 1: Model Source ────────────────────────────────────────────
-    st.markdown("#### 1. Model Source")
-
-    source_options = ["Local Adapter", "HuggingFace Model"]
-    default_idx = 0 if adapters else 1
-
-    source_mode = st.radio(
-        "Source",
-        source_options,
-        index=default_idx,
-        horizontal=True,
-        help="Local adapters (from models/adapters/) or download from HuggingFace.",
-    )
-
-    hf_model_id = None
-    selected_adapter = None
-    checkpoint = None
-
-    if source_mode == "HuggingFace Model":
-        hf_model_id = st.text_input(
-            "HuggingFace Model ID",
+    with st.expander("⬇️ Download adapter from HuggingFace"):
+        dl_hf_id = st.text_input(
+            "HuggingFace Adapter ID",
             placeholder="e.g. Minar0/my-ministral-3-8B-Instruct-2512-bnb-4bit-v1.0",
-            help="The adapter will be downloaded to models/adapters/.",
+            key="dl_hf_id",
         )
-        checkpoint = st.text_input(
-            "Checkpoint (optional)",
-            placeholder="e.g. checkpoint-400",
-            help="Download a specific checkpoint subfolder from the repo.",
+        dl_checkpoint = st.text_input(
+            "Checkpoint subfolder (optional)",
+            placeholder="e.g. checkpoint-150",
+            key="dl_checkpoint",
+            help="Leave empty to download the full repo.",
         ) or None
 
-        # Show adapter info if entered
-        if hf_model_id:
-            st.caption(f"Will download to: `models/adapters/{hf_model_id.replace('/', '_')}/`")
-
-    elif not adapters:
-        st.info("No trained adapters found in `models/adapters/`. "
-                "Train a model first or download from HuggingFace.")
-    else:
-        selected_adapter = st.selectbox(
-            "Trained LoRA Adapter", adapters,
-            help="Fine-tuned adapters in models/adapters/.",
-        )
-
-        # List available checkpoints
-        adapter_dir = _resolve_adapter_path(selected_adapter)
-        checkpoints = sorted(
-            [d.name for d in adapter_dir.iterdir()
-             if d.is_dir() and d.name.startswith("checkpoint-")],
-            key=lambda x: int(x.split("-")[-1]) if x.split("-")[-1].isdigit() else 0,
-        ) if adapter_dir.exists() else []
-
-        if checkpoints:
-            checkpoint_options = ["Latest (final weights)"] + checkpoints
-            selected_cp = st.selectbox(
-                "Checkpoint", checkpoint_options,
-                help="Select a specific training checkpoint.",
-            )
-            if selected_cp != "Latest (final weights)":
-                checkpoint = selected_cp
-
-        # Show adapter info card
-        if adapter_dir.exists():
-            size_mb = sum(
-                f.stat().st_size for f in adapter_dir.glob("**/*") if f.is_file()
-            ) / (1024 * 1024)
-            # Try to read base model from adapter_config
-            base_model_name = "unknown"
-            for cfg_path in [adapter_dir / "adapter_config.json"] + list(
-                adapter_dir.glob("checkpoint-*/adapter_config.json")
-            ):
-                if cfg_path.exists():
-                    import json as _json
-                    cfg = _json.loads(cfg_path.read_text())
-                    base_model_name = cfg.get("base_model_name_or_path", "unknown")
-                    break
-            st.caption(
-                f"📦 **{selected_adapter}** — {size_mb:.0f} MB — "
-                f"Base: `{base_model_name}` — "
-                f"{len(checkpoints)} checkpoint(s)"
+        if dl_hf_id:
+            dl_local = ADAPTERS_DIR / dl_hf_id   # keeps namespace: adapters/Minar0/my-model
+            cp_flag = f"--include '{dl_checkpoint}/*' " if dl_checkpoint else ""
+            st.code(
+                f"huggingface-cli download {dl_hf_id} {cp_flag}"
+                f"--local-dir {dl_local}",
+                language="bash",
             )
 
-    # Download button
-    can_download = bool(hf_model_id) if source_mode == "HuggingFace Model" else bool(selected_adapter)
-    if source_mode == "HuggingFace Model" and hf_model_id:
-        if st.button("⬇️ Download Adapter + Base Model", type="secondary",
-                     width="stretch"):
-            with st.status("Downloading…", expanded=True) as status:
-                try:
-                    from tools.export_to_ollama import export_model
-                    adapter_path = str(ADAPTERS_DIR / hf_model_id.replace("/", "_"))
-                    out_path = str(GGUF_DIR / hf_model_id.split("/")[-1])
-                    export_model(
-                        adapter_path=adapter_path,
-                        out_path=out_path,
-                        quant_method="q4_k_m",
-                        ollama_name=None,  # Don't register yet
-                        base_model=hf_model_id,
-                        checkpoint=checkpoint,
-                    )
-                    status.update(label="✅ Download & merge complete!", state="complete")
-                    st.rerun()
-                except Exception as e:
-                    status.update(label="❌ Download failed", state="error")
-                    st.error(f"Error: {e}")
-    elif source_mode == "Local Adapter" and selected_adapter:
-        if st.button("🔄 Merge Adapter + Base Model → GGUF", type="secondary",
-                     width="stretch"):
-            with st.status("Merging…", expanded=True) as status:
-                try:
-                    from tools.export_to_ollama import export_model
-                    adapter_dir = _resolve_adapter_path(selected_adapter)
-                    out_path = str(GGUF_DIR / selected_adapter)
-                    export_model(
-                        adapter_path=str(adapter_dir),
-                        out_path=out_path,
-                        quant_method="q4_k_m",
-                        ollama_name=None,  # Don't register yet
-                        checkpoint=checkpoint,
-                    )
-                    status.update(label="✅ Merge complete!", state="complete")
-                    st.rerun()
-                except Exception as e:
-                    status.update(label="❌ Merge failed", state="error")
-                    st.error(f"Error: {e}")
+            if st.button("⬇️ Download now", key="btn_dl_adapter"):
+                with st.spinner(f"Downloading {dl_hf_id}…"):
+                    try:
+                        from huggingface_hub import snapshot_download
+                        kwargs: dict = {"repo_id": dl_hf_id, "local_dir": str(dl_local)}
+                        if dl_checkpoint:
+                            kwargs["allow_patterns"] = [f"{dl_checkpoint}/*"]
+                        snapshot_download(**kwargs)
+                        st.success(f"✅ Downloaded to `{dl_local}`")
+                    except Exception as e:
+                        st.error(f"Download failed: {e}")
 
     st.divider()
 
-    # ── Section 2: Export to Ollama ────────────────────────────────────────
-    st.markdown("#### 2. Export to Ollama")
+    # ── Step 2: Select adapter + merge with base model ─────────────────────
+    st.markdown("#### Step 2 — Merge adapter with base model")
 
-    available_gguf = _get_available_gguf()
+    adapters = get_available_adapters()
 
-    if not available_gguf:
-        st.info("No merged models found in `models/gguf/`. "
-                "Use Section 1 to download and merge an adapter first.")
-    else:
-        gguf_names = [m["name"] for m in available_gguf]
-        selected_gguf = st.selectbox(
-            "Merged Model", gguf_names,
-            help="Select a merged model from models/gguf/.",
+    if not adapters:
+        st.info("No adapters found in `models/adapters/`. Use Step 1 to download one.")
+        return
+
+    col_a, col_b = st.columns(2)
+    with col_a:
+        selected_adapter = st.selectbox(
+            "LoRA Adapter",
+            adapters,
+            help="Adapters in models/adapters/ (supports Namespace/ModelName layout).",
+        )
+    adapter_dir_path = _resolve_adapter_path(selected_adapter)
+
+    with col_b:
+        checkpoints = sorted(
+            [d.name for d in adapter_dir_path.iterdir()
+             if d.is_dir() and d.name.startswith("checkpoint-")],
+            key=lambda x: int(x.split("-")[-1]) if x.split("-")[-1].isdigit() else 0,
+        ) if adapter_dir_path.exists() else []
+
+        checkpoint: str | None = None
+        if checkpoints:
+            cp_options = ["Latest (final weights)"] + checkpoints
+            selected_cp = st.selectbox("Checkpoint", cp_options)
+            if selected_cp != "Latest (final weights)":
+                checkpoint = selected_cp
+        else:
+            st.caption("No checkpoints found — using final weights.")
+
+    # Resolve base model
+    base_model_hf_id = _read_adapter_base_model(adapter_dir_path)
+    base_model_path: Path | None = None
+    base_status_msg = ""
+
+    if base_model_hf_id:
+        clean_id = re.sub(r"-bnb-\d+bit$", "", base_model_hf_id, flags=re.IGNORECASE)
+        base_model_path = _find_base_model(base_model_hf_id)
+        if base_model_path:
+            base_status_msg = f"✅ Base model: `{base_model_path}`"
+        else:
+            # Need to download the fp16 version
+            dl_base_path = BASE_DIR / clean_id
+            st.warning(
+                f"Base model not found locally. The adapter requires `{base_model_hf_id}`. "
+                f"The fp16 version (`{clean_id}`) will be downloaded to `{dl_base_path}`.",
+            )
+            if st.button("⬇️ Download base model", key="btn_dl_base"):
+                with st.spinner(f"Downloading {clean_id}…"):
+                    try:
+                        from huggingface_hub import snapshot_download
+                        dl_base_path.mkdir(parents=True, exist_ok=True)
+                        snapshot_download(repo_id=clean_id, local_dir=str(dl_base_path))
+                        st.success(f"✅ Downloaded to `{dl_base_path}`")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Download failed: {e}")
+
+    if base_status_msg:
+        st.caption(base_status_msg)
+
+    # Build output path
+    # Keep namespace tree: merged/Minar0/my-model-checkpoint-150
+    _adapter_ns, _adapter_model = (
+        selected_adapter.rsplit("/", 1) if "/" in selected_adapter
+        else (None, selected_adapter)
+    )
+    cp_suffix = f"-{checkpoint}" if checkpoint else ""
+    merge_out_name = f"{_adapter_model}{cp_suffix}"
+    merge_out_path = (MERGED_DIR / _adapter_ns / merge_out_name) if _adapter_ns else (MERGED_DIR / merge_out_name)
+
+    st.caption(f"Output: `{merge_out_path}`")
+
+    # Merge process state
+    _MERGE_PROC = "merge_proc"
+    _MERGE_LINES = "merge_lines"
+    merge_proc: subprocess.Popen | None = st.session_state.get(_MERGE_PROC)
+    is_merging = merge_proc is not None and merge_proc.poll() is None
+
+    merge_log_box = st.empty()
+    merge_lines: list[str] = st.session_state.get(_MERGE_LINES, [])
+    if merge_lines:
+        scrollable_log(merge_log_box, merge_lines[-500:], title="Merge Progress")
+
+    merge_col, cancel_col, _ = st.columns([2, 1, 1])
+    with merge_col:
+        if st.button(
+            "🔀 Merge LoRA into Base Model",
+            type="primary", width="stretch",
+            disabled=base_model_path is None or is_merging,
+            key="btn_merge_lora",
+        ):
+            script = Path("tools/merge_lora_safetensors.py").resolve()
+            adapter_cp_path = (
+                adapter_dir_path / checkpoint if checkpoint else adapter_dir_path
+            )
+            cmd = [
+                sys.executable, str(script),
+                "--adapter", str(adapter_cp_path),
+                "--base", str(base_model_path),
+                "--output", str(merge_out_path),
+                "--name", merge_out_name,
+            ]
+            new_lines: list[str] = []
+            proc = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, bufsize=1,
+                env={**os.environ, "PYTHONUNBUFFERED": "1"},
+            )
+            st.session_state[_MERGE_PROC] = proc
+            st.session_state[_MERGE_LINES] = new_lines
+            threading.Thread(
+                target=lambda p, out: [out.append(ln.rstrip()) for ln in p.stdout],
+                args=(proc, new_lines), daemon=True,
+            ).start()
+            st.rerun()
+
+    with cancel_col:
+        if is_merging and st.button("⏹ Cancel", key="btn_merge_cancel",
+                                    type="secondary", width="stretch"):
+            merge_proc.terminate()
+            st.session_state.pop(_MERGE_PROC, None)
+            st.rerun()
+
+    if is_merging:
+        time.sleep(1); st.rerun()
+    elif merge_proc is not None:
+        st.session_state.pop(_MERGE_PROC, None)
+        if merge_proc.returncode == 0:
+            st.success(f"✅ Merged model saved to `{merge_out_path}`. Proceed to Step 3.")
+            st.session_state.pop(_MERGE_LINES, None)
+        elif merge_proc.returncode != -15:
+            st.error(f"Merge failed (exit {merge_proc.returncode})")
+
+    st.divider()
+
+    # ── Step 3: Export to Ollama ───────────────────────────────────────────
+    st.markdown("#### Step 3 — Export to Ollama")
+
+    merged_models = _get_merged_models()
+
+    if not merged_models:
+        st.info("No merged models found in `models/merged/`. Complete Step 2 first.")
+        return
+
+    merged_names = [m["name"] for m in merged_models]
+    # Pre-select the model just merged (if any)
+    _full_merge_name = f"{_adapter_ns}/{merge_out_name}" if _adapter_ns else merge_out_name
+    default_idx = merged_names.index(_full_merge_name) if _full_merge_name in merged_names else 0
+    selected_merged = st.selectbox(
+        "Merged Model", merged_names, index=default_idx,
+    )
+    merged_info = next(m for m in merged_models if m["name"] == selected_merged)
+    st.caption(f"📦 {merged_info['size_mb']:.0f} MB — `{merged_info['path']}`")
+
+    _default_name = re.sub(r"[^a-z0-9\-:.]", "-", selected_merged.lower())
+    _default_name = re.sub(r"-{2,}", "-", _default_name).strip("-")
+
+    col_name, col_quant = st.columns(2)
+    with col_name:
+        ollama_name = st.text_input(
+            "Ollama Model Name",
+            value=_default_name,
+            help="Lowercase, hyphens only.",
+        )
+    with col_quant:
+        quant_method = st.selectbox(
+            "Quantization", ["Q4_K_M", "Q8_0", "f16"], index=0,
+            help="4-bit is standard. f16 = no quantization (large file).",
         )
 
-        # Show info
-        gguf_info = next(m for m in available_gguf if m["name"] == selected_gguf)
-        st.caption(f"📦 {gguf_info['size_mb']:.0f} MB — `models/gguf/{selected_gguf}/`")
+    if st.button("🚀 Register in Ollama", type="primary", width="stretch",
+                 disabled=not ollama_name):
+        gguf_path = str(merged_info["path"])
+        cmd = ["ollama", "create", ollama_name, "-f", "Modelfile"]
+        if quant_method != "f16":
+            cmd.extend(["--quantize", quant_method])
 
-        col_name, col_quant = st.columns(2)
-        with col_name:
-            ollama_name = st.text_input(
-                "Ollama Model Name",
-                value=f"my-{selected_gguf}",
-                help="The name this model will have in Ollama.",
-            )
-        with col_quant:
-            quant_method = st.selectbox(
-                "Quantization", ["q4_K_M", "q8_0", "f16"], index=0,
-                help="4-bit (q4_K_M) is standard. f16 = no quantization.",
-            )
-
-        if st.button("🚀 Register in Ollama", type="primary", width="stretch",
-                     disabled=not ollama_name):
-            import subprocess
-            gguf_path = str(gguf_info["path"])
-            cmd = ["ollama", "create", ollama_name, "-f", "Modelfile"]
+        with st.status(f"Creating '{ollama_name}' in Ollama…", expanded=True) as status:
+            st.write(f"`{' '.join(cmd)}`")
+            st.write(f"Directory: `{gguf_path}`")
             if quant_method != "f16":
-                cmd.extend(["--quantize", quant_method])
-
-            with st.status(f"Creating '{ollama_name}' in Ollama…", expanded=True) as status:
-                st.write(f"Running: `{' '.join(cmd)}`")
-                st.write(f"Working directory: `{gguf_path}`")
-                if quant_method != "f16":
-                    st.write(f"⏳ Quantizing to {quant_method} — this may take 10-15 minutes…")
-                try:
-                    subprocess.run(cmd, cwd=gguf_path, check=True)
-                    status.update(label="✅ Model registered!", state="complete",
-                                  expanded=False)
-                    st.success(f"Successfully added `{ollama_name}` to Ollama! "
-                               f"Select it in LLM Settings.")
-                    st.balloons()
-                except Exception as e:
-                    status.update(label="❌ Failed", state="error", expanded=True)
-                    st.error(f"Error: {e}")
-                    st.code(f"cd {gguf_path} && {' '.join(cmd)}", language="bash")
+                st.write(f"⏳ Quantizing to {quant_method} — this may take 10-15 minutes…")
+            try:
+                subprocess.run(cmd, cwd=gguf_path, check=True)
+                status.update(label="✅ Model registered!", state="complete", expanded=False)
+                st.success(f"Added `{ollama_name}` to Ollama. Select it in LLM Settings.")
+                st.balloons()
+            except Exception as e:
+                status.update(label="❌ Failed", state="error", expanded=True)
+                st.error(f"Error: {e}")
+                st.code(f"cd {gguf_path} && {' '.join(cmd)}", language="bash")
 
 def render_models_tab():
     st.markdown("### :material/model_training: Models & Adapters")

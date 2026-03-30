@@ -40,9 +40,9 @@ from pathlib import Path
 
 # ── Directory constants ───────────────────────────────────────────────────────
 
-ADAPTERS_DIR = Path("models/adapters")
-BASE_DIR = Path("models/base")
-GGUF_DIR = Path("models/gguf")
+ADAPTERS_DIR = Path("models/adapters")   # namespace/name tree: adapters/Minar0/my-model
+BASE_DIR = Path("models/base")           # namespace/name tree: base/unsloth/Ministral-3B
+MERGED_DIR = Path("models/merged")      # flat: merged/my-model-checkpoint-150
 
 # Legacy paths for backward compatibility
 _LEGACY_MODELS_DIR = Path("models")
@@ -147,9 +147,8 @@ def _resolve_base_model_path(base_model_id: str) -> str:
     else:
         resolved_id = base_model_id
 
-    # Create a safe directory name from the model ID
-    safe_name = resolved_id.replace("/", "_")
-    local_path = BASE_DIR / safe_name
+    # Preserve namespace tree: base/unsloth/Ministral-3B
+    local_path = BASE_DIR / resolved_id
 
     if local_path.exists() and any(local_path.iterdir()):
         print(f"  Base model found in cache: {local_path}")
@@ -173,34 +172,37 @@ def _resolve_model_source(
     base_model: str | None,
     checkpoint: str | None,
 ) -> str:
-    """Determine the model source path or HuggingFace ID."""
-    if base_model:
-        if checkpoint:
-            print(f"Downloading checkpoint '{checkpoint}' from HuggingFace: {base_model}…")
-            return _download_hf_checkpoint(base_model, checkpoint)
-        else:
-            print(f"Model source: HuggingFace {base_model}")
-            return base_model
-    else:
-        model_source = adapter_path
-        if checkpoint:
-            model_source = str(Path(adapter_path) / checkpoint)
-            print(f"Model source: {model_source} (checkpoint)")
-        else:
-            print(f"Model source: {model_source}")
+    """Determine the model source path (adapter + optional checkpoint).
 
-        if not Path(model_source).exists():
-            # Try legacy path (backward compatibility)
-            legacy_source = _try_legacy_path(adapter_path)
-            if legacy_source:
-                model_source = legacy_source
-                if checkpoint:
-                    model_source = str(Path(legacy_source) / checkpoint)
-                print(f"  (resolved from legacy path: {model_source})")
-            else:
-                print(f"ERROR: Path not found: {model_source}", file=sys.stderr)
-                sys.exit(1)
+    ``checkpoint`` always refers to a subfolder of ``adapter_path``.
+    ``base_model`` is only used when no local adapter path is provided —
+    Unsloth reads the base model automatically from adapter_config.json.
+    """
+    # checkpoint always belongs to the adapter, never to base_model
+    model_source = adapter_path
+    if checkpoint:
+        model_source = str(Path(adapter_path) / checkpoint)
+        print(f"Model source: {model_source} (checkpoint)")
+    else:
+        print(f"Model source: {model_source}")
+
+    if Path(model_source).exists():
         return model_source
+
+    # Try legacy paths for backward compatibility
+    legacy_source = _try_legacy_path(adapter_path)
+    if legacy_source:
+        model_source = str(Path(legacy_source) / checkpoint) if checkpoint else legacy_source
+        print(f"  (resolved from legacy path: {model_source})")
+        return model_source
+
+    # No local adapter — fall back to HuggingFace download
+    if base_model:
+        print(f"Model source: HuggingFace {base_model}")
+        return base_model
+
+    print(f"ERROR: Path not found: {model_source}", file=sys.stderr)
+    sys.exit(1)
 
 
 def _try_legacy_path(adapter_path: str) -> str | None:
@@ -238,8 +240,7 @@ def _download_hf_checkpoint(repo_id: str, checkpoint: str) -> str:
     """
     from huggingface_hub import snapshot_download
 
-    safe_name = repo_id.replace("/", "_")
-    local_dir = ADAPTERS_DIR / safe_name
+    local_dir = ADAPTERS_DIR / repo_id   # keeps namespace tree: adapters/Minar0/my-model
     ADAPTERS_DIR.mkdir(parents=True, exist_ok=True)
 
     print(f"  Downloading {repo_id}/{checkpoint} …")
@@ -839,6 +840,17 @@ def export_model(
         Checkpoint subdirectory name (e.g. "checkpoint-400").
         Appended to ``adapter_path`` to load a specific checkpoint.
     """
+    # Print equivalent CLI command for debugging
+    cmd = ["python", "tools/export_to_ollama.py", "--adapter", adapter_path]
+    if base_model:
+        cmd += ["--base-model", base_model]
+    if checkpoint:
+        cmd += ["--checkpoint", checkpoint]
+    cmd += ["--output", out_path, "--quant", quant_method]
+    if ollama_name:
+        cmd += ["--ollama-name", ollama_name]
+    print(f"\n[export_to_ollama] Equivalent CLI command:\n  {' '.join(cmd)}\n", flush=True)
+
     # Ensure output directories exist
     GGUF_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -856,12 +868,20 @@ def export_model(
         pass
 
     if _use_unsloth:
-        print(f"Loading model with Unsloth: {model_source}…")
+        import torch as _torch
+        # For GGUF export, always load on CPU in full precision.
+        # Dequantizing 4-bit weights + merging LoRA on GPU causes OOM even on
+        # cards that have enough VRAM for inference, because Unsloth temporarily
+        # needs both the quantized and dequantized tensors in VRAM simultaneously.
+        # The actual GGUF quantization is done in C++ (llama.cpp) so CPU is fine.
+        import torch as _torch_dtype
+        print(f"Loading model for GGUF export (CPU, bfloat16): {model_source}…")
         model, tokenizer = FastLanguageModel.from_pretrained(
             model_name=model_source,
             max_seq_length=512,
-            dtype=None,
-            load_in_4bit=True,
+            dtype=_torch_dtype.bfloat16,  # bfloat16 halves RAM vs float32 (~6-7 GB vs 12-15 GB)
+            load_in_4bit=False,           # Full precision needed for lossless LoRA merge
+            device_map={"": "cpu"},       # CPU prevents CUDA OOM during dequant + merge
         )
 
         print(f"  Model loaded: {model.config.model_type}")

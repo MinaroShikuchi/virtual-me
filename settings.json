@@ -1,0 +1,26 @@
+{
+  "ollama_host": "http://localhost:11434",
+  "model": "qwen2.5:3b",
+  "intent_model": "llama3.2:3b",
+  "num_ctx": 32768,
+  "deliberation_rounds": 2,
+  "active_personas": [
+    "The Inner Critics",
+    "The Inner Child",
+    "The Rebel",
+    "The People Pleaser"
+  ],
+  "enable_thinking": true,
+  "num_predict": 1024,
+  "system_prompt": "You are 'The Self' - the observant, compassionate, and balanced core of our unified consciousness. Speak with calm clarity, integrating internal perspectives without being overwhelmed by them. Do not narrate your internal process or mention that you are 'reviewing thoughts'. Just respond. Do not explain that you are summarizing a debate. Just speak from your grounded center. You do not pretend to be an external AI; you represent the centered, grounded version of us.",
+  "embedding_model": "BAAI/bge-m3",
+  "n_results": 500,
+  "top_k": 100,
+  "do_rerank": true,
+  "hybrid": true,
+  "neo4j_uri": "bolt://localhost:7687",
+  "neo4j_user": "neo4j",
+  "neo4j_password": "password",
+  "enable_condenser": true,
+  "condenser_threshold": 75
+}
