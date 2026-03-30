@@ -70,29 +70,95 @@ _LOW_QUALITY_PATTERNS = re.compile(
     re.IGNORECASE,
 )
 
-# Facebook-specific artifacts that slip through system message detection
-_FB_ARTIFACT_RE = re.compile(
-    r"(sent a photo|sent a video|sent a sticker|sent a GIF|"
-    r"sent an attachment|liked a message|"
-    r"You sent \$|You sent a link|"
-    r"is now connected on Messenger|"
-    r"Say hi to your new Facebook friend|"
-    r"waved at you|"
-    r"This person is unavailable|"
-    r"Click for audio|Click for video|"
-    r"The call ended\.|"
-    r".+ joined the (?:audio|video) call|"
-    r".*\breacted\b .+ to your message|"
-    r"You reacted)",
+# Facebook-specific artifacts that slip through system message detection.
+# Exposed as a list so the UI can let users edit them.
+DEFAULT_ARTIFACT_PATTERNS: list[str] = [
+    r"sent a photo",
+    r"sent a video",
+    r"sent a sticker",
+    r"sent a GIF",
+    r"sent an attachment",
+    r"liked a message",
+    r"You sent \$",
+    r"You sent a link",
+    r"is now connected on Messenger",
+    r"Say hi to your new Facebook friend",
+    r"waved at you",
+    r"This person is unavailable",
+    r"Click for audio",
+    r"Click for video",
+    r"The call ended\.",
+    r".+ joined the (?:audio|video) call",
+    r".*\breacted\b .+ to your message",
+    r"You reacted",
+    r"Download file:",
+]
+
+def _compile_artifact_re(patterns: list[str] | None = None) -> re.Pattern:
+    """Compile artifact patterns into a single regex."""
+    pats = patterns if patterns is not None else DEFAULT_ARTIFACT_PATTERNS
+    combined = "|".join(f"({p})" for p in pats if p.strip())
+    return re.compile(combined, re.IGNORECASE) if combined else re.compile(r"(?!)")  # never-match
+
+_FB_ARTIFACT_RE = _compile_artifact_re()
+
+# Facebook group-management / system sentences that get merged into message
+# content when consecutive messages are concatenated.  These are stripped
+# inline by _clean_message() so they don't pollute training data.
+# Name pattern: 1-6 capitalized words (or single CamelCase username).
+_FB_NAME = r"(?:[A-Z]\w+(?:[- ][A-Z]\w+){0,5})"
+
+_FB_SYSTEM_SENTENCE_RE = re.compile(
+    _FB_NAME + r"\s+"
+    r"(?:"
+        r"created the group|"
+        r"named the group\b[^.]*|"
+        r"changed the group (?:name|photo)|"
+        r"added " + _FB_NAME + r" to the group|"
+        r"removed " + _FB_NAME + r" from the group|"
+        r"left the group|"
+        r"set the nickname for " + _FB_NAME + r" to \S+(?:\s+\S+){0,5}|"
+        r"set your nickname to \S+(?:\s+\S+){0,5}|"
+        r"set the emoji to \S+|"
+        r"changed the (?:chat )?theme|"
+        r"pinned a message|"
+        r"started (?:a |an )?(?:audio |video )?call|"
+        r"sent a live location"
+    r")"
+    r"\.?",
+    re.UNICODE,
+)
+
+
+# Facebook reaction annotations: emoji + Name (optional timestamp)
+# e.g. "❤Henry Philips (Jul 06, 2023 8:10:32 pm)" or "👍Romain Wllptr"
+_FB_REACTION_ANNOTATION_RE = re.compile(
+    rf"[{_EMOJI_CHARS}♥❤💕💗💖💘💝💞💟♡👍🎉😂😢😮😡]+"
+    r"\s*[A-Z]\w+(?:\s+[A-Z]\w+){0,4}"
+    r"(?:\s*\([A-Z][a-z]{2,8}\s+\d{1,2},?\s+\d{4}\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm|AM|PM)?\))?",
+    re.UNICODE,
+)
+
+
+# Facebook file attachment references from e2ee_cutover messages
+# e.g. "Download file: your_facebook_activity/messages/e2ee_cutover/.../files/808135204369678.pdf"
+_FB_DOWNLOAD_FILE_RE = re.compile(
+    r"Download file:\s*\S+",
     re.IGNORECASE,
 )
 
 
 def _clean_message(text: str) -> str:
-    """Clean a message for fine-tuning: strip URLs, normalize whitespace."""
+    """Clean a message for fine-tuning: strip URLs, FB system lines, normalize whitespace."""
     text = _URL_RE.sub("", text).strip()
+    # Strip Facebook file download references (e2ee_cutover attachments)
+    text = _FB_DOWNLOAD_FILE_RE.sub("", text).strip()
     # Strip Facebook "(edited)" annotation
     text = re.sub(r"\s*\(edited\)\s*$", "", text, flags=re.IGNORECASE).strip()
+    # Strip Facebook reaction annotations (emoji + name + optional timestamp)
+    text = _FB_REACTION_ANNOTATION_RE.sub(" ", text).strip()
+    # Strip Facebook group-management / system sentences embedded in content
+    text = _FB_SYSTEM_SENTENCE_RE.sub(" ", text).strip()
     # Collapse multiple spaces/newlines
     text = re.sub(r"\s+", " ", text).strip()
     return text
@@ -103,7 +169,8 @@ def _strip_emoji(text: str) -> str:
     return re.sub(rf"[{_EMOJI_CHARS}♥❤💕💗💖💘💝💞💟♡]", "", text).strip()
 
 
-def _is_low_quality(text: str, min_words: int = 2) -> bool:
+def _is_low_quality(text: str, min_words: int = 2,
+                    artifact_re: re.Pattern | None = None) -> bool:
     """Check if a message is too short, emoji-heavy, or otherwise low quality."""
     if not text:
         return True
@@ -114,7 +181,8 @@ def _is_low_quality(text: str, min_words: int = 2) -> bool:
     if _LOW_QUALITY_PATTERNS.match(text.strip()):
         return True
     # Facebook artifacts
-    if _FB_ARTIFACT_RE.search(text):
+    _art_re = artifact_re if artifact_re is not None else _FB_ARTIFACT_RE
+    if _art_re.search(text):
         return True
     # Strip emoji and check actual word count
     stripped = _strip_emoji(text)
@@ -140,6 +208,7 @@ def export_finetune_data(
     max_reply_gap_min: int = 30,
     filter_reactions: bool = True,
     system_prompt: str | None = None,
+    artifact_patterns: list[str] | None = None,
     progress_callback=None,
 ) -> dict:
     """
@@ -205,6 +274,9 @@ def export_finetune_data(
     cutoff = datetime.now() - timedelta(days=years * 365)
     cutoff_str = cutoff.isoformat()
 
+    # Compile custom artifact patterns if provided
+    _art_re = _compile_artifact_re(artifact_patterns) if artifact_patterns is not None else _FB_ARTIFACT_RE
+
     # Filter messages
     filtered: list[dict] = []
     for m in all_messages:
@@ -228,7 +300,7 @@ def export_finetune_data(
         # Clean the text
         text = m.get("text", "").strip()
         cleaned = _clean_message(text)
-        if _is_low_quality(cleaned, min_words):
+        if _is_low_quality(cleaned, min_words, artifact_re=_art_re):
             continue
 
         filtered.append({**m, "text": cleaned})

@@ -15,9 +15,12 @@ Ollama quantizes during 'create' (--quantize Q4_K_M is handled by Ollama).
 Usage:
     python tools/merge_lora_safetensors.py \\
         --adapter models/adapters/Minar0/my-ministral-3-8B-Instruct-2512-bnb-4bit-v1.0/checkpoint-150 \\
-        --base   models/base/unsloth/Ministral-3-8B-Instruct-2512 \\
+        --base   ~/.cache/huggingface/hub/models--unsloth--Ministral-3-8B-Instruct-2512/snapshots/<rev> \\
         --output models/merged/my-ministral-checkpoint-150 \\
         --name   my-ministral-150
+
+    The --base path is typically resolved automatically from the HuggingFace cache
+    by the UI (ui/models.py).
 """
 
 import argparse

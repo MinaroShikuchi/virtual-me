@@ -55,7 +55,6 @@ _CLI_FLAGS: dict[str, tuple[str, type]] = {
     "--lora-dropout":   ("lora_dropout",   float),
     "--max-seq-length": ("max_seq_length", int),
     "--grad-accum":     ("grad_accum",     int),
-    "--ollama-name":    ("ollama_name",    str),
 }
 
 # Defaults matching tools/finetune_lora.py

@@ -462,7 +462,7 @@ Examples:
         help="Number of formatted examples to display (default: 5)",
     )
     parser.add_argument(
-        "--max-seq-length", type=int, default=512,
+        "--max-seq-length", type=int, default=1024,
         help="Max sequence length for filtering stats (default: 512)",
     )
     parser.add_argument(

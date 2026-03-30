@@ -327,9 +327,50 @@ def prepare_dataset(
     num_filtered = 0
     num_merged = 0
     num_template_errors = 0
+    num_split = 0          # multi-turn examples that were auto-split
+    num_split_kept = 0     # single-turn pairs recovered from splits
+    too_long_details: list[str] = []  # details of examples still too long
     raw_total = len(raw_examples)
 
     _tokenizer_obj = getattr(tokenizer, "tokenizer", tokenizer)
+
+    def _try_format_and_add(messages: list[dict]) -> bool:
+        """Try to format messages with chat template and add if within length.
+
+        Returns True if the example was added, False if too long or errored.
+        """
+        try:
+            text = tokenizer.apply_chat_template(
+                messages, tokenize=False, add_generation_prompt=False,
+            )
+        except Exception:
+            return False
+
+        token_ids = _tokenizer_obj.encode(text, add_special_tokens=False)
+        if len(token_ids) > max_seq_length:
+            return False
+
+        examples.append({"text": text})
+        return True
+
+    def _split_into_single_turns(messages: list[dict]) -> list[list[dict]]:
+        """Split a multi-turn conversation into individual user/assistant pairs.
+
+        Preserves the system message (if any) in each split.
+        """
+        system_msgs = [m for m in messages if m["role"] == "system"]
+        non_system = [m for m in messages if m["role"] != "system"]
+
+        pairs: list[list[dict]] = []
+        i = 0
+        while i < len(non_system) - 1:
+            if non_system[i]["role"] == "user" and non_system[i + 1]["role"] == "assistant":
+                pair = list(system_msgs) + [non_system[i], non_system[i + 1]]
+                pairs.append(pair)
+                i += 2
+            else:
+                i += 1
+        return pairs
 
     preview_printed = False
     for ex in raw_examples:
@@ -367,13 +408,58 @@ def prepare_dataset(
                   flush=True)
             preview_printed = True
 
-        # Filter by token length
+        # Check token length
         token_ids = _tokenizer_obj.encode(text, add_special_tokens=False)
-        if len(token_ids) > max_seq_length:
-            num_filtered += 1
+        if len(token_ids) <= max_seq_length:
+            examples.append({"text": text})
             continue
 
-        examples.append({"text": text})
+        # ── Too long: try auto-splitting multi-turn into single-turn pairs ──
+        non_system = [m for m in sanitized if m["role"] != "system"]
+        user_assistant_pairs = sum(
+            1 for i in range(len(non_system) - 1)
+            if non_system[i]["role"] == "user" and non_system[i + 1]["role"] == "assistant"
+        )
+
+        if user_assistant_pairs > 1:
+            # Multi-turn: split and try each pair individually
+            num_split += 1
+            pairs = _split_into_single_turns(sanitized)
+            any_kept = False
+            for pair in pairs:
+                if _try_format_and_add(pair):
+                    num_split_kept += 1
+                    any_kept = True
+                else:
+                    # Even a single-turn pair is too long
+                    pair_preview = " | ".join(
+                        f"{m['role']}: {m['content'][:60]}…" if len(m['content']) > 60
+                        else f"{m['role']}: {m['content']}"
+                        for m in pair if m["role"] != "system"
+                    )
+                    pair_tokens = len(_tokenizer_obj.encode(
+                        tokenizer.apply_chat_template(pair, tokenize=False, add_generation_prompt=False),
+                        add_special_tokens=False,
+                    ))
+                    too_long_details.append(
+                        f"  [{pair_tokens:,} tokens] (split from multi-turn) "
+                        f"{ex.get('conversation', '?')}: {pair_preview}"
+                    )
+                    num_filtered += 1
+            if not any_kept:
+                # All pairs were too long
+                pass
+        else:
+            # Single-turn but still too long
+            num_filtered += 1
+            preview = " | ".join(
+                f"{m['role']}: {m['content'][:60]}…" if len(m['content']) > 60
+                else f"{m['role']}: {m['content']}"
+                for m in sanitized if m["role"] != "system"
+            )
+            too_long_details.append(
+                f"  [{len(token_ids):,} tokens] {ex.get('conversation', '?')}: {preview}"
+            )
 
     dataset = Dataset.from_list(examples).shuffle(seed=42)
 
@@ -382,6 +468,9 @@ def prepare_dataset(
     print(f"    - Kept: {len(dataset):,}", flush=True)
     if num_merged > 0:
         print(f"    - Merged consecutive roles: {num_merged:,}", flush=True)
+    if num_split > 0:
+        print(f"    - Auto-split multi-turn → single-turn: {num_split:,} "
+              f"(recovered {num_split_kept:,} pairs)", flush=True)
     if num_filtered > 0:
         print(f"    - Filtered (too long > {max_seq_length}): {num_filtered:,} ⚠️",
               flush=True)
@@ -389,10 +478,21 @@ def prepare_dataset(
         print(f"    - Template errors (skipped): {num_template_errors:,} ⚠️",
               flush=True)
 
+    # Show ALL examples that are still too long
+    if too_long_details:
+        print(f"\n  ── Examples exceeding {max_seq_length} tokens (even after splitting) ──",
+              flush=True)
+        for detail in too_long_details:
+            print(detail, flush=True)
+        print(f"  ── End of too-long examples ({len(too_long_details):,} total) ──\n",
+              flush=True)
+
     stats = {
         "total": raw_total,
         "kept": len(dataset),
         "merged": num_merged,
+        "split": num_split,
+        "split_kept": num_split_kept,
         "filtered": num_filtered,
         "template_errors": num_template_errors,
     }
@@ -480,33 +580,13 @@ def save_and_export(
     model,
     tokenizer,
     output_path: Path,
-    ollama_name: str | None = None,
 ):
-    """Save LoRA adapter and optionally export to Ollama."""
+    """Save LoRA adapter weights and tokenizer."""
     print(f"\nSaving LoRA adapter to {output_path}…", flush=True)
     model.save_pretrained(str(output_path))
     tokenizer.save_pretrained(str(output_path))
 
     print(f"\n✅ Fine-tuning complete!", flush=True)
     print(f"  Adapter saved to: {output_path}", flush=True)
-    print(f"  To use: load base model + apply LoRA adapter from {output_path}",
+    print(f"  To register in Ollama, use the Models page (Step 2 → Step 3).",
           flush=True)
-
-    if ollama_name:
-        try:
-            from tools.export_to_ollama import export_model
-            print("\n" + "=" * 60, flush=True)
-            print(f"🚀 Automated pipeline: Exporting and registering as "
-                  f"'{ollama_name}' in Ollama...", flush=True)
-            print("=" * 60 + "\n", flush=True)
-            # Place GGUF output in models/gguf/<adapter_name>/
-            gguf_out = Path("models/gguf") / output_path.name
-            export_model(
-                adapter_path=str(output_path),
-                out_path=str(gguf_out),
-                quant_method="q4_k_m",
-                ollama_name=ollama_name,
-            )
-        except Exception as e:
-            print(f"\n⚠️ Auto-export to Ollama failed: {e}", flush=True)
-            print("You can manually export it later.", flush=True)

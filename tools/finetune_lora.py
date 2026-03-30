@@ -67,7 +67,6 @@ def run_finetune(
     logging_steps: int = 10,
     use_4bit: bool = True,
     progress_callback=None,
-    ollama_name: str = None,
     resume: bool = False,
     system_prompt: str | None = None,
 ):
@@ -201,7 +200,7 @@ def run_finetune(
     trainer.train(resume_from_checkpoint=resume)
 
     # ── Save & export ─────────────────────────────────────────────────────
-    save_and_export(model, tokenizer, output_path, ollama_name)
+    save_and_export(model, tokenizer, output_path)
 
     return {
         "base_model": base_model,
@@ -236,9 +235,6 @@ def main():
                         help="Save a checkpoint every N training steps (default: 100)")
     parser.add_argument("--no-4bit", action="store_true",
                         help="Disable 4-bit quantization")
-    parser.add_argument("--ollama-name", default=None,
-                        help="If provided, automatically export the adapter to GGUF "
-                             "and register it in Ollama under this name.")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from the latest checkpoint in output_dir "
                              "if available.")
@@ -270,7 +266,6 @@ def main():
         gradient_accumulation_steps=args.grad_accum,
         save_steps=args.save_steps,
         use_4bit=not args.no_4bit,
-        ollama_name=args.ollama_name,
         resume=args.resume,
         system_prompt=args.system_prompt,
     )

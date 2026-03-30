@@ -4,8 +4,10 @@ ui/models.py — Manage LoRA adapters, Fine-Tuning, and Ollama compilation
 Directory layout:
     models/
     ├── adapters/   # LoRA adapters (local training output + downloaded from HF)
-    ├── base/       # Base models (downloaded once, reused across exports)
-    └── gguf/       # Merged GGUF output (for Ollama import)
+    └── merged/     # Merged safetensors output (adapter + base, fp16/bfloat16)
+
+Base models are stored in the standard HuggingFace cache
+(~/.cache/huggingface/hub/) and resolved via huggingface_hub APIs.
 """
 import sys
 import os
@@ -41,13 +43,16 @@ except ImportError:
 # ── Directory constants ───────────────────────────────────────────────────────
 
 ADAPTERS_DIR = Path("models/adapters")
-BASE_DIR = Path("models/base")
 MERGED_DIR = Path("models/merged")
 
 # Legacy flat paths (old layout without namespace subfolders)
 _LEGACY_MODELS_DIR = Path("models")
 _LEGACY_HF_CACHE = Path("models/_hf_cache")
-_LEGACY_GGUF_DIR = Path("models/gguf")
+
+_DEFAULT_SYSTEM_PROMPT = (
+    "You are Romain. You write casually, mix French and English naturally, "
+    "and prefer direct pragmatic answers. Reply as yourself — not as an AI."
+)
 
 
 def _is_adapter_dir(d: Path) -> bool:
@@ -90,19 +95,35 @@ def _resolve_adapter_path(adapter_name: str) -> Path:
 
 
 def _find_base_model(hf_id: str) -> Path | None:
-    """Find a base model in models/base/ using the namespace/name tree.
+    """Find a base model in the HuggingFace cache.
 
     Always prefers the non-BNB (fp16/bfloat16) variant, since BNB weights
     are uint8 and cannot be merged or imported by llama.cpp.
 
+    Uses ``huggingface_hub`` to locate the cached snapshot.
     Returns the Path if found with safetensors, else None.
     """
     import re as _re
     clean_id = _re.sub(r"-bnb-\d+bit$", "", hf_id, flags=_re.IGNORECASE)
+
+    try:
+        from huggingface_hub import try_to_load_from_cache, scan_cache_dir
+    except ImportError:
+        return None
+
     for candidate_id in ([clean_id, hf_id] if clean_id != hf_id else [hf_id]):
-        p = BASE_DIR / candidate_id   # e.g. models/base/unsloth/Ministral-3-8B-Instruct-2512
-        if p.exists() and any(p.glob("*.safetensors")):
-            return p
+        try:
+            # Check if the repo exists in the HF cache
+            cache_info = scan_cache_dir()
+            for repo in cache_info.repos:
+                if repo.repo_id == candidate_id:
+                    # Find the latest revision snapshot path
+                    for rev in sorted(repo.revisions, key=lambda r: r.last_modified, reverse=True):
+                        p = rev.snapshot_path
+                        if any(p.glob("*.safetensors")):
+                            return p
+        except Exception:
+            continue
     return None
 
 
@@ -157,7 +178,7 @@ def render_finetune_tab():
         else:
             lora_base_model = st.text_input(
                 "Base model (HuggingFace ID or URL)",
-                value="meta-llama/Llama-3.2-3B-Instruct",
+                value="unsloth/Ministral-3-8B-Instruct-2512-bnb-4bit",
                 key="lora_base_model_hf",
                 help="Enter a HuggingFace model ID (e.g. 'unsloth/llama-3-8b-bnb-4bit') or a full HuggingFace URL.",
             )
@@ -168,7 +189,7 @@ def render_finetune_tab():
         )
         # Calculate dynamic auto-export name based on selected base model
         base_clean = getattr(lora_base_model, "name", lora_base_model) if not isinstance(lora_base_model, str) else lora_base_model
-        base_clean = base_clean.split(":")[0].split("/")[-1].lower() # e.g. meta-llama/Llama-3.2-3B-Instruct -> llama-3.2-3b-instruct
+        base_clean = base_clean.split(":")[0].split("/")[-1].lower() # e.g. unsloth/Ministral-3-8B-Instruct-2512-bnb-4bit -> llama-3.2-3b-instruct
         
         # Try finding parameter count like 3b, 14b, 7b in the original string
         params_match = re.search(r'(\d+(?:\.\d+)?[bmBM])', lora_base_model)
@@ -187,7 +208,7 @@ def render_finetune_tab():
         )
     with col_lora2:
         lora_epochs = st.number_input(
-            "Epochs", min_value=1, max_value=20, value=3, step=1,
+            "Epochs", min_value=1, max_value=20, value=2, step=1,
             key="lora_epochs",
         )
         lora_batch = st.number_input(
@@ -206,7 +227,7 @@ def render_finetune_tab():
         lora_rank = st.selectbox(
             "LoRA rank",
             options=[4, 8, 16, 32, 64],
-            index=1,  # default 8
+            index=2,  # default 8
             key="lora_rank",
             help="Higher rank = more parameters = more expressive but slower. "
                  "8 is a good starting point.",
@@ -215,7 +236,7 @@ def render_finetune_tab():
     col_lora3, col_lora4 = st.columns(2)
     with col_lora3:
         lora_alpha = st.number_input(
-            "LoRA alpha", min_value=4, max_value=128, value=16, step=4,
+            "LoRA alpha", min_value=4, max_value=128, value=32, step=4,
             key="lora_alpha",
             help="Scaling factor. Typically 2× the rank.",
         )
@@ -232,7 +253,7 @@ def render_finetune_tab():
         )
         lora_save_steps = st.number_input(
             "Save checkpoint every N steps",
-            min_value=10, max_value=1000, value=100, step=10,
+            min_value=10, max_value=1000, value=50, step=10,
             key="lora_save_steps",
             help="Save a checkpoint every N training steps. Lower values = more checkpoints "
                  "to compare, but uses more disk space.",
@@ -249,12 +270,6 @@ def render_finetune_tab():
             key="lora_resume",
             help="If interrupted, resume training from the latest checkpoint saved in your output directory."
         )
-        lora_auto_export = st.checkbox(
-            "Auto-compile to Ollama",
-            value=True,
-            key="lora_auto_export",
-            help="If checked, automatically converts the raw weights at the end of training into a GGUF model registered in Ollama."
-        )
 
     st.caption(
         f"**Effective batch size:** {lora_batch * lora_grad_accum} "
@@ -263,16 +278,18 @@ def render_finetune_tab():
 
     with st.expander("👀 Preview formatted dataset"):
         st.caption("See how your JSONL data will be physically formatted for your selected base model's specific prompt template.")
-        _DEFAULT_SYSTEM_PROMPT = (
-            "You are Romain. You write casually, mix French and English naturally, "
-            "and prefer direct pragmatic answers. Reply as yourself — not as an AI."
-        )
         preview_system_prompt = st.text_area(
             "System prompt (clear to use the model's default)",
             value=_DEFAULT_SYSTEM_PROMPT,
             key="preview_system_prompt",
             height=80,
             help="Clear the field to fall back to the model's built-in default system prompt.",
+        )
+        st.info(
+            "💡 **Instruct models:** It is not recommended to override the default system prompt "
+            "during fine-tuning — instruct-tuned base models already have one baked in. "
+            "You can safely customise the system prompt at **inference time** instead "
+            "(e.g. in the Ollama `Modelfile`)."
         )
         if st.button("Generate Preview", key="btn_format_preview", type="secondary"):
             if not Path(lora_data).exists():
@@ -353,80 +370,136 @@ def render_finetune_tab():
 
                             # ── Dataset Length Distribution & Outlier Analysis ─────────────────────
                             st.markdown("### 📊 Sequence Length Distribution")
-                            st.info("Scanning full dataset to analyze token counts...")
-                            
+                            st.info("Scanning full dataset — auto-splitting multi-turn examples that exceed max sequence length…")
+
+                            _tok_obj = getattr(tokenizer, "tokenizer", tokenizer)
+
+                            def _tokenize_msgs(msgs_list):
+                                """Format messages with chat template and return token count."""
+                                t = tokenizer.apply_chat_template(msgs_list, tokenize=False, add_generation_prompt=False)
+                                return len(_tok_obj.encode(t, add_special_tokens=False))
+
+                            def _sanitize_msgs(msgs):
+                                """Sanitize message content, inject system prompt."""
+                                sanitized = []
+                                for m in msgs:
+                                    if m["role"] == "system":
+                                        continue
+                                    content = m.get("content", "")
+                                    if isinstance(content, list):
+                                        content = "".join(
+                                            b.get("text", "") for b in content
+                                            if isinstance(b, dict) and b.get("type") == "text"
+                                        )
+                                    sanitized.append({"role": m["role"], "content": content})
+                                if active_system:
+                                    sanitized = [{"role": "system", "content": active_system}] + sanitized
+                                return sanitized
+
+                            def _split_single_turns(msgs_list):
+                                """Split multi-turn into individual user/assistant pairs."""
+                                sys_msgs = [m for m in msgs_list if m["role"] == "system"]
+                                non_sys = [m for m in msgs_list if m["role"] != "system"]
+                                pairs = []
+                                i = 0
+                                while i < len(non_sys) - 1:
+                                    if non_sys[i]["role"] == "user" and non_sys[i+1]["role"] == "assistant":
+                                        pairs.append(list(sys_msgs) + [non_sys[i], non_sys[i+1]])
+                                        i += 2
+                                    else:
+                                        i += 1
+                                return pairs
+
                             all_lengths = []
-                            outliers = [] # List of (line_num, tokens, text_snippet)
-                            
+                            still_too_long = []  # (line_num, tokens, snippet, was_split)
+                            num_auto_split = 0
+
                             with open(lora_data, "r", encoding="utf-8") as f_dist:
                                 for i, line in enumerate(f_dist, 1):
                                     if not line.strip(): continue
                                     try:
                                         obj = json.loads(line)
                                         msgs = obj.get("conversations", obj.get("messages", []))
-                                        if msgs:
-                                            sanitized_loop = []
-                                            for m in msgs:
-                                                if m["role"] == "system":
-                                                    continue
-                                                content = m.get("content", "")
-                                                if isinstance(content, list):
-                                                    content = "".join(
-                                                        b.get("text", "") for b in content
-                                                        if isinstance(b, dict) and b.get("type") == "text"
-                                                    )
-                                                sanitized_loop.append({"role": m["role"], "content": content})
-                                            if active_system:
-                                                sanitized_loop = [{"role": "system", "content": active_system}] + sanitized_loop
+                                        if not msgs:
+                                            continue
+                                        sanitized_loop = _sanitize_msgs(msgs)
+                                        tokens = _tokenize_msgs(sanitized_loop)
 
-                                            # Estimate length via template + exact tokenization
-                                            t_text = tokenizer.apply_chat_template(sanitized_loop, tokenize=False, add_generation_prompt=False)
-                                            _tok_obj = getattr(tokenizer, "tokenizer", tokenizer)
-                                            tokens = len(_tok_obj.encode(t_text, add_special_tokens=False))
+                                        if tokens <= lora_max_seq:
                                             all_lengths.append(tokens)
-                                            msg_snippet = " / ".join(
+                                            continue
+
+                                        # Too long — try auto-splitting multi-turn
+                                        non_sys = [m for m in sanitized_loop if m["role"] != "system"]
+                                        ua_pairs = sum(
+                                            1 for j in range(len(non_sys) - 1)
+                                            if non_sys[j]["role"] == "user" and non_sys[j+1]["role"] == "assistant"
+                                        )
+
+                                        if ua_pairs > 1:
+                                            num_auto_split += 1
+                                            for pair in _split_single_turns(sanitized_loop):
+                                                try:
+                                                    pair_tokens = _tokenize_msgs(pair)
+                                                except Exception:
+                                                    continue
+                                                if pair_tokens <= lora_max_seq:
+                                                    all_lengths.append(pair_tokens)
+                                                else:
+                                                    all_lengths.append(pair_tokens)
+                                                    snip = " / ".join(
+                                                        f"[{m['role']}] {m['content'][:80]}"
+                                                        for m in pair if m["role"] != "system"
+                                                    )
+                                                    still_too_long.append((i, pair_tokens, snip, True))
+                                        else:
+                                            all_lengths.append(tokens)
+                                            snip = " / ".join(
                                                 f"[{m['role']}] {m['content'][:80]}"
-                                                for m in sanitized_loop
-                                                if m["role"] != "system"
+                                                for m in sanitized_loop if m["role"] != "system"
                                             )
-                                            outliers.append((i, tokens, msg_snippet))
-                                    except: continue
-                            
+                                            still_too_long.append((i, tokens, snip, False))
+                                    except:
+                                        continue
+
                             if all_lengths:
                                 df_len = pd.DataFrame(all_lengths, columns=["Tokens"])
-                                # Create bins for histogram (e.g. increments of 128)
                                 max_len = max(all_lengths)
                                 bin_size = 128
                                 bins = list(range(0, max_len + bin_size, bin_size))
                                 df_len["Range"] = pd.cut(df_len["Tokens"], bins=bins, labels=[f"{b}-{b+bin_size}" for b in bins[:-1]])
-                                
-                                # Plot
+
                                 chart_data = df_len["Range"].value_counts().sort_index()
                                 st.bar_chart(chart_data, x_label="Token Range", y_label="Number of Examples")
-                                
-                                col_stat1, col_stat2, col_stat3 = st.columns(3)
-                                with col_stat1: st.metric("Total Examples", len(all_lengths))
-                                with col_stat2: st.metric("Average Tokens", int(sum(all_lengths)/len(all_lengths)))
-                                with col_stat3: st.metric("Max Tokens", max_len)
-                                
-                                # 🔍 Outlier Drill-down
-                                sorted_outliers = sorted(outliers, key=lambda x: x[1], reverse=True)
-                                
-                                col_out1, col_out2 = st.columns(2)
-                                with col_out1:
-                                    st.markdown("#### ⚠️ Longest Examples")
-                                    for ln, tok, snip in sorted_outliers[:5]:
-                                        with st.expander(f"Line {ln}: **{tok} tokens**"):
-                                            st.write(f"_{snip}_")
-                                with col_out2:
-                                    st.markdown("#### 🔍 Shortest Examples")
-                                    for ln, tok, snip in sorted_outliers[-5:][::-1]:
-                                        with st.expander(f"Line {ln}: **{tok} tokens**"):
-                                            st.write(f"_{snip}_")
 
-                                # Highlight warnings
-                                if max_len > lora_max_seq:
-                                    st.error(f"⚠️ **OOM Risk Warning:** Some examples ({max_len} tokens) exceed your 'Max sequence length' ({lora_max_seq}). These will be truncated during training, which can lead to poor model quality. Consider pruning these long entries at the line numbers mentioned above.")
+                                col_stat1, col_stat2, col_stat3, col_stat4 = st.columns(4)
+                                with col_stat1: st.metric("Total Examples", f"{len(all_lengths):,}")
+                                with col_stat2: st.metric("Average Tokens", int(sum(all_lengths)/len(all_lengths)))
+                                with col_stat3: st.metric("Max Tokens", f"{max_len:,}")
+                                with col_stat4: st.metric("Auto-split", f"{num_auto_split:,}")
+
+                                # Show ALL examples that exceed max_seq_length
+                                if still_too_long:
+                                    sorted_too_long = sorted(still_too_long, key=lambda x: x[1], reverse=True)
+                                    st.markdown(f"#### ⚠️ All examples exceeding {lora_max_seq} tokens ({len(sorted_too_long):,} total)")
+                                    st.caption(
+                                        "These examples will be **filtered out** during training. "
+                                        "Multi-turn examples are auto-split into single-turn pairs first."
+                                    )
+                                    for ln, tok, snip, was_split in sorted_too_long:
+                                        label = f"Line {ln}: **{tok:,} tokens**"
+                                        if was_split:
+                                            label += " _(split from multi-turn)_"
+                                        with st.expander(label):
+                                            st.write(snip)
+
+                                    st.error(
+                                        f"⚠️ **{len(sorted_too_long):,} examples** exceed max sequence length "
+                                        f"({lora_max_seq} tokens) even after auto-splitting. "
+                                        f"Consider increasing max sequence length or shortening these examples."
+                                    )
+                                else:
+                                    st.success(f"✅ All examples fit within {lora_max_seq} tokens (after auto-splitting).")
                             else:
                                 st.warning("Could not analyze sequence lengths.")
 
@@ -488,11 +561,6 @@ def render_finetune_tab():
                     cmd.append("--no-4bit")
                 if lora_resume:
                     cmd.append("--resume")
-                if lora_auto_export:
-                    # Derives the Ollama name from the final folder component of the output directory
-                    raw_out = lora_output.strip().split("/")[-1]
-                    cmd.extend(["--ollama-name", raw_out])
-
                 env = {**os.environ, "PYTHONUNBUFFERED": "1"}
                 proc = subprocess.Popen(
                     cmd,
@@ -657,19 +725,17 @@ def render_export_tab():
         if base_model_path:
             base_status_msg = f"✅ Base model: `{base_model_path}`"
         else:
-            # Need to download the fp16 version
-            dl_base_path = BASE_DIR / clean_id
+            # Need to download the fp16 version into the HF cache
             st.warning(
-                f"Base model not found locally. The adapter requires `{base_model_hf_id}`. "
-                f"The fp16 version (`{clean_id}`) will be downloaded to `{dl_base_path}`.",
+                f"Base model not found in HuggingFace cache. The adapter requires `{base_model_hf_id}`. "
+                f"The fp16 version (`{clean_id}`) will be downloaded to the HF cache.",
             )
             if st.button("⬇️ Download base model", key="btn_dl_base"):
-                with st.spinner(f"Downloading {clean_id}…"):
+                with st.spinner(f"Downloading {clean_id} to HF cache…"):
                     try:
                         from huggingface_hub import snapshot_download
-                        dl_base_path.mkdir(parents=True, exist_ok=True)
-                        snapshot_download(repo_id=clean_id, local_dir=str(dl_base_path))
-                        st.success(f"✅ Downloaded to `{dl_base_path}`")
+                        cached_path = snapshot_download(repo_id=clean_id)
+                        st.success(f"✅ Downloaded to HF cache: `{cached_path}`")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Download failed: {e}")
@@ -683,8 +749,10 @@ def render_export_tab():
         selected_adapter.rsplit("/", 1) if "/" in selected_adapter
         else (None, selected_adapter)
     )
+    # Strip BNB quantization suffix — the merged model uses fp16/bfloat16 weights
+    _adapter_model_clean = _adapter_model.replace("-bnb-4bit", "")
     cp_suffix = f"-{checkpoint}" if checkpoint else ""
-    merge_out_name = f"{_adapter_model}{cp_suffix}"
+    merge_out_name = f"{_adapter_model_clean}{cp_suffix}"
     merge_out_path = (MERGED_DIR / _adapter_ns / merge_out_name) if _adapter_ns else (MERGED_DIR / merge_out_name)
 
     st.caption(f"Output: `{merge_out_path}`")
@@ -790,33 +858,322 @@ def render_export_tab():
 
     if st.button("🚀 Register in Ollama", type="primary", width="stretch",
                  disabled=not ollama_name):
-        gguf_path = str(merged_info["path"])
+        merged_path = str(merged_info["path"])
         cmd = ["ollama", "create", ollama_name, "-f", "Modelfile"]
         if quant_method != "f16":
             cmd.extend(["--quantize", quant_method])
 
         with st.status(f"Creating '{ollama_name}' in Ollama…", expanded=True) as status:
             st.write(f"`{' '.join(cmd)}`")
-            st.write(f"Directory: `{gguf_path}`")
+            st.write(f"Directory: `{merged_path}`")
             if quant_method != "f16":
                 st.write(f"⏳ Quantizing to {quant_method} — this may take 10-15 minutes…")
             try:
-                subprocess.run(cmd, cwd=gguf_path, check=True)
+                subprocess.run(cmd, cwd=merged_path, check=True)
                 status.update(label="✅ Model registered!", state="complete", expanded=False)
                 st.success(f"Added `{ollama_name}` to Ollama. Select it in LLM Settings.")
                 st.balloons()
             except Exception as e:
                 status.update(label="❌ Failed", state="error", expanded=True)
                 st.error(f"Error: {e}")
-                st.code(f"cd {gguf_path} && {' '.join(cmd)}", language="bash")
+                st.code(f"cd {merged_path} && {' '.join(cmd)}", language="bash")
+
+def render_training_data_tab():
+    st.markdown("### :material/model_training: Training Data")
+    st.markdown(
+        "Filter conversations (last N years, English only, no system messages) "
+        "and export as **JSONL** for LLM fine-tuning. Each example is a "
+        "`user → assistant` exchange pair."
+    )
+
+    col_ft1, col_ft2 = st.columns(2)
+    with col_ft1:
+        ft_json = st.text_input(
+            "Source JSON",
+            value="./data/facebook/facebook_messages.json",
+            key="ft_json_input",
+        )
+        ft_years = st.number_input(
+            "Years to include",
+            min_value=1, max_value=20, value=3, step=1,
+            key="ft_years",
+            help="Only include messages from the last N years.",
+        )
+        ft_min_words = st.number_input(
+            "Min words per message",
+            min_value=1, max_value=20, value=2, step=1,
+            key="ft_min_words",
+            help="Skip messages shorter than this.",
+        )
+    with col_ft2:
+        ft_output = st.text_input(
+            "Output JSONL",
+            value="./data/facebook/finetune_data.jsonl",
+            key="ft_output",
+        )
+        ft_language = st.selectbox(
+            "Language",
+            options=["en", "fr"],
+            index=0,
+            key="ft_language",
+            help="Keep only messages in this language.",
+        )
+        ft_max_words = st.number_input(
+            "Max words (assistant reply)",
+            min_value=10, max_value=1000, value=200, step=10,
+            key="ft_max_words",
+            help="Skip pairs where your reply exceeds this word count. "
+                 "This is conversational fine-tuning, not long-form memory.",
+        )
+        ft_max_turns = st.number_input(
+            "Max turns per example",
+            min_value=1, max_value=10, value=1, step=1,
+            key="ft_max_turns",
+            help="1 = single user→assistant pair. "
+                 "2+ = multi-turn conversations per training example.",
+        )
+        ft_max_reply_gap = st.number_input(
+            "Max gap between discussions (min)",
+            min_value=1, max_value=1440, value=30, step=5,
+            key="ft_max_reply_gap",
+            help="If the gap between the last user message and your first reply exceeds this, "
+                 "the exchange is considered a different discussion and skipped.",
+        )
+        ft_filter_reactions = st.checkbox(
+            "Filter out reactions", value=True, key="ft_filter_reactions",
+            help="If checked, standalone Facebook reactions are excluded from the training data."
+        )
+
+    with st.expander("🔍 Artifact filter patterns", expanded=False):
+        from tools.export_finetune import DEFAULT_ARTIFACT_PATTERNS
+        st.caption(
+            "Messages matching any of these regex patterns are considered low-quality "
+            "artifacts and excluded from the training data. One pattern per line."
+        )
+        _default_patterns_text = "\n".join(DEFAULT_ARTIFACT_PATTERNS)
+        ft_artifact_patterns_text = st.text_area(
+            "Artifact patterns (regex, one per line)",
+            value=_default_patterns_text,
+            key="ft_artifact_patterns",
+            height=200,
+            help="Each line is a regex pattern. Messages matching any pattern are excluded.",
+        )
+
+    st.caption(
+        "**Format:** `{\"messages\": [{\"role\": \"user\", \"content\": \"...\"}, "
+        "{\"role\": \"assistant\", \"content\": \"...\"}]}`\n\n"
+        "• **user** = the other person's message\n"
+        "• **assistant** = your reply"
+    )
+
+    log_key_ft = "vec_log_finetune"
+
+    run_col_ft, _ = st.columns([1, 3])
+    with run_col_ft:
+        do_export = st.button("Export Fine-tune Data", key="btn_finetune",
+                     icon=":material/play_arrow:", width="stretch")
+
+    log_box_ft = st.empty()
+    if do_export:
+        from tools.export_finetune import export_finetune_data
+
+        lines_ft: list[str] = []
+        progress_ft = st.progress(0, text="Exporting fine-tune data…")
+
+        def _ft_cb(current: int, total: int):
+            pct = current / total if total > 0 else 0
+            progress_ft.progress(pct, text=f"Processing conversations… {current:,}/{total:,}")
+
+        try:
+            # Parse artifact patterns from text area
+            _custom_patterns = [
+                line.strip() for line in ft_artifact_patterns_text.splitlines()
+                if line.strip()
+            ]
+            stats = export_finetune_data(
+                json_path=ft_json,
+                output_path=ft_output,
+                years=ft_years,
+                language=ft_language,
+                min_words=ft_min_words,
+                max_words=ft_max_words,
+                max_turns=ft_max_turns,
+                max_reply_gap_min=ft_max_reply_gap,
+                filter_reactions=ft_filter_reactions,
+                artifact_patterns=_custom_patterns if _custom_patterns != DEFAULT_ARTIFACT_PATTERNS else None,
+                progress_callback=_ft_cb,
+            )
+            progress_ft.empty()
+
+            lines_ft.append(f"Self name: {stats['self_name']}")
+            lines_ft.append(f"Total messages: {stats['total_messages']:,}")
+            lines_ft.append(f"After filtering ({stats['years']}y, {stats['language']}): "
+                            f"{stats['filtered_messages']:,}")
+            lines_ft.append(f"Training examples exported: {stats['pairs_exported']:,}")
+            if stats.get('skipped_too_long'):
+                lines_ft.append(f"Skipped (reply > {stats['max_words']} words): "
+                                f"{stats['skipped_too_long']:,}")
+            lines_ft.append(f"Conversations used: {stats['conversations_used']:,}")
+            lines_ft.append(f"Output: {stats['output_file']}")
+
+            st.session_state[log_key_ft] = lines_ft
+            scrollable_log(log_box_ft, lines_ft, follow=False, title="Fine-tune Export")
+
+            st.success(
+                f"Exported **{stats['pairs_exported']:,}** training examples "
+                f"from **{stats['conversations_used']:,}** conversations → "
+                f"`{stats['output_file']}`"
+            )
+
+        except FileNotFoundError as e:
+            progress_ft.empty()
+            st.error(str(e))
+        except Exception as e:
+            progress_ft.empty()
+            st.error(f"Export failed: {e}")
+
+    # Show previous log if available
+    if not do_export and st.session_state.get(log_key_ft):
+        scrollable_log(log_box_ft, st.session_state[log_key_ft], follow=False, title="Fine-tune Export")
+
+    # Interactive dataset preview (persistent)
+    output_p = Path(ft_output)
+    if output_p.exists():
+        st.divider()
+
+        st.markdown("### Interactive Dataset Preview")
+        st.caption("*(Note: To see the effects of changing settings like Max Turns, you must click **Export** again to regenerate the file!)*")
+
+        @st.cache_data(show_spinner=False)
+        def _load_preview_data(filepath, mtime):
+            examples_by_conv = {}
+            try:
+                with open(filepath, "r", encoding="utf-8") as pf:
+                    for line in pf:
+                        if not line.strip(): continue
+                        ex = json.loads(line)
+                        conv = ex.get("conversation") or "Unknown Conversation"
+                        if conv not in examples_by_conv:
+                            examples_by_conv[conv] = []
+                        examples_by_conv[conv].append(ex)
+            except Exception:
+                pass
+            return examples_by_conv
+
+        preview_data = _load_preview_data(str(output_p), os.path.getmtime(output_p))
+        if preview_data:
+            if "preview_conv" not in st.session_state or st.session_state.preview_conv not in preview_data:
+                st.session_state.preview_conv = list(preview_data.keys())[0]
+            if "preview_idx" not in st.session_state:
+                st.session_state.preview_idx = 0
+
+            convs = list(preview_data.keys())
+
+            p_col1, p_col2, p_col3 = st.columns([3, 1, 1])
+            with p_col1:
+                selected_conv = st.selectbox(
+                    "Conversation",
+                    options=convs,
+                    index=convs.index(st.session_state.preview_conv) if st.session_state.preview_conv in convs else 0,
+                    key="preview_conv_select"
+                )
+            with p_col2:
+                st.markdown("<div style='margin-top: 28px'></div>", unsafe_allow_html=True)
+                if st.button("⬅ Previous", key="btn_prev_ex", width="stretch"):
+                    st.session_state.preview_idx -= 1
+            with p_col3:
+                st.markdown("<div style='margin-top: 28px'></div>", unsafe_allow_html=True)
+                if st.button("Next ➡", key="btn_next_ex", width="stretch"):
+                    st.session_state.preview_idx += 1
+
+            if selected_conv != st.session_state.preview_conv:
+                st.session_state.preview_conv = selected_conv
+                st.session_state.preview_idx = 0
+                st.rerun()
+
+            conv_examples = preview_data[st.session_state.preview_conv]
+            idx = st.session_state.preview_idx % len(conv_examples)
+            example = conv_examples[idx]
+
+            st.caption(f"**Showing example {idx + 1} of {len(conv_examples)}** (from {st.session_state.preview_conv})")
+
+            msgs = example.get("messages", [])
+            for m in msgs:
+                role = m.get("role", "user")
+                content = m.get("content", "")
+                with st.chat_message(role):
+                    st.markdown(content)
+
+            # Shuffle button — after the preview
+            if st.button("🔀 Shuffle to a random example", key="btn_shuffle_ex"):
+                import random
+                st.session_state.preview_conv = random.choice(convs)
+                conv_examples_for_shuffle = preview_data[st.session_state.preview_conv]
+                st.session_state.preview_idx = random.randint(0, len(conv_examples_for_shuffle) - 1)
+                st.rerun()
+
+        # ── Token distribution chart (after preview) ──────────────────
+        @st.cache_data(show_spinner=False)
+        def _load_token_stats(filepath, mtime):
+            rows = []
+            try:
+                with open(filepath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        if not line.strip():
+                            continue
+                        ex = json.loads(line)
+                        tokens = sum(
+                            len(m.get("content", "")) // 4
+                            for m in ex.get("messages", [])
+                        )
+                        rows.append((ex.get("conversation") or "Unknown", tokens))
+            except Exception:
+                pass
+            return rows
+
+        token_rows = _load_token_stats(str(output_p), os.path.getmtime(output_p))
+        if token_rows:
+            import random as _rng
+            import plotly.graph_objects as go
+
+            # Shuffle with fixed seed to simulate training order
+            shuffled_rows = list(token_rows)
+            _rng.Random(42).shuffle(shuffled_rows)
+            y_tokens = [r[1] for r in shuffled_rows]
+            hover_convs = [r[0] for r in shuffled_rows]
+
+            fig_tok = go.Figure(data=[
+                go.Bar(
+                    x=list(range(len(y_tokens))),
+                    y=y_tokens,
+                    marker_color="#6366f1",
+                    hovertemplate="Row %{x}<br><b>%{customdata}</b><br>~%{y:,} tokens<extra></extra>",
+                    customdata=hover_convs,
+                )
+            ])
+            fig_tok.update_layout(
+                title=f"Tokens per dataset row (shuffled, seed=42) — {len(y_tokens):,} rows",
+                title_font=dict(size=14, color="#e2e8f0"),
+                xaxis=dict(title="Dataset rows (shuffled training order)", gridcolor="#333", showticklabels=False),
+                yaxis=dict(title="Approx. tokens", gridcolor="#333"),
+                paper_bgcolor="rgba(0,0,0,0)",
+                plot_bgcolor="rgba(0,0,0,0)",
+                margin=dict(l=40, r=20, t=40, b=20),
+                height=300,
+            )
+            st.plotly_chart(fig_tok, use_container_width=True)
+
 
 def render_models_tab():
     st.markdown("### :material/model_training: Models & Adapters")
     st.write("Train new LoRA adapters and compile them into native Ollama models.")
     st.divider()
     
-    tab_train, tab_export = st.tabs(["🚀 LoRA Fine-tuning", "📦 Ollama Export"])
+    tab_data, tab_train, tab_export = st.tabs(["📊 Training Data", "🚀 LoRA Fine-tuning", "📦 Ollama Export"])
     
+    with tab_data:
+        render_training_data_tab()
+
     with tab_train:
         render_finetune_tab()
         
