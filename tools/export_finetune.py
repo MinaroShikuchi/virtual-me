@@ -411,7 +411,8 @@ def export_finetune_data(
                         break
 
                     # Merge consecutive user messages into one turn (strict alternation)
-                    user_text = " ".join(
+                    # Use \n to preserve the natural rapid-fire texting rhythm
+                    user_text = "\n".join(
                         ue.get("text", "").strip() for ue in user_entries
                         if ue.get("text", "").strip()
                     )
@@ -419,7 +420,7 @@ def export_finetune_data(
                         turns.append({"role": "user", "content": user_text})
 
                     # Merge consecutive assistant messages into one turn (strict alternation)
-                    asst_text = " ".join(
+                    asst_text = "\n".join(
                         ae.get("text", "").strip() for ae in asst_entries
                         if ae.get("text", "").strip()
                     )

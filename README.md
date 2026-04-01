@@ -40,7 +40,7 @@ python extract_facebook.py
 python ingest_facebook_messages.py
 ```
 
-This creates a local ChromaDB instance in `./chroma_data/` (no Docker required).
+This creates a local ChromaDB instance in `./.chroma_data/` (no Docker required).
 
 ### 4. Query Your Brain
 
@@ -84,7 +84,7 @@ import chromadb
 from chromadb.utils import embedding_functions
 
 # Connect to ChromaDB
-client = chromadb.PersistentClient(path="./chroma_data")
+client = chromadb.PersistentClient(path="./.chroma_data")
 
 # Get collection
 embedding_func = embedding_functions.SentenceTransformerEmbeddingFunction(

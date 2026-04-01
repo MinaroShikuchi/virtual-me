@@ -25,6 +25,6 @@ data/
 logs/
 output/
 .chroma_data/
-neo4j_data/
+.neo4j_data/
 models/
 unsloth_compiled_cache/
